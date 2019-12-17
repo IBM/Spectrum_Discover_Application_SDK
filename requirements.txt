@@ -1,0 +1,5 @@
+requests==2.22.0
+confluent-kafka==1.2.0
+boto3==1.6.5
+paramiko==2.6.0
+pycryptodome==3.9.4
