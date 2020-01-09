@@ -44,7 +44,7 @@ class ApplicationBase():
                                  - default: kafka (relative path to this script)
 
     LOG_LEVEL .................. Log verbosity level (ERROR, WARNING, INFO, DEBUG)
-                                 - default: DEBUG
+                                 - default: INFO
     """
 
     def __init__(self, reg_info):
