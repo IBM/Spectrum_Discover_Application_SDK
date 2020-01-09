@@ -19,8 +19,9 @@ ENCODING = 'utf-8'
 class DocumentRetrievalFactory:
     """Factory class to create the right sort of retrieval object."""
 
-    def create(self, application, key):
-        # Connection lookup to find required type
+    @staticmethod
+    def create(application, key):
+        """Lookup connection and create required type."""
         platform, client = application.connections.get((key.datasource, key.cluster), (None, None))
 
         if platform and client:
@@ -32,9 +33,10 @@ class DocumentRetrievalFactory:
                 return DocumentRetrievalScale(client)
             elif platform == 'Spectrum Scale Local':
                 return DocumentRetrievalLocalScale(client)
+        return None
 
 
-class DocumentRetrievalBase(object):
+class DocumentRetrievalBase():
     """A class to retrieve a document via a Spectrum Discover Connection."""
 
     def __init__(self, client):
@@ -88,6 +90,10 @@ class DocumentRetrievalBase(object):
 
 
 class DocumentRetrievalCOS(DocumentRetrievalBase):
+    """Create a COS document class.
+
+    This will act appropriately upon COS documents that have been downloaded as temp files.
+    """
 
     def get_document(self, key):
         """Return document filepath."""
@@ -98,8 +104,8 @@ class DocumentRetrievalCOS(DocumentRetrievalBase):
             obj = self.client.get_object(Bucket=key.datasource, Key=key.path.decode(ENCODING).split('/', 1)[1])
             content = obj['Body'].read()
             filepath = '/tmp/cosfile_' + str(os.getpid())
-            with open(filepath, 'w', encoding=ENCODING) as f:
-                f.write(content.decode(ENCODING, 'replace'))
+            with open(filepath, 'w', encoding=ENCODING) as file:
+                file.write(content.decode(ENCODING, 'replace'))
         else:
             self.logger.error('Could not access file %s', key.path)
 
@@ -132,6 +138,11 @@ class DocumentRetrievalCOS(DocumentRetrievalBase):
 
 
 class DocumentRetrievalNFS(DocumentRetrievalBase):
+    """Create a NFS document class.
+
+    This will act appropriately upon nfs documents.
+    No need to download or cleanup since accessed direclty upon the mount point.
+    """
 
     def get_document(self, key):
         """Return document filepath."""
@@ -152,6 +163,10 @@ class DocumentRetrievalNFS(DocumentRetrievalBase):
 
 
 class DocumentRetrievalScale(DocumentRetrievalBase):
+    """Create a Spectrum Scale document class.
+
+    This will act appropriately upon Scale documents that have been downloaded as temp files.
+    """
 
     def get_document(self, key):
         """Return document filepath."""
@@ -183,6 +198,11 @@ class DocumentRetrievalScale(DocumentRetrievalBase):
 
 
 class DocumentRetrievalLocalScale(DocumentRetrievalBase):
+    """Create a Local Spectrum Scale document class.
+
+    This will act appropriately upon nfs documents.
+    No need to download or cleanup since accessed direclty upon the mount point.
+    """
 
     def get_document(self, key):
         """Return Document Key."""

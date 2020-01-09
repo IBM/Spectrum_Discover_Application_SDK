@@ -12,20 +12,20 @@ import os
 import sys
 import json
 import logging
-import boto3
 from io import open
 from re import match
 from functools import partial
 from urllib.parse import urljoin
-import requests
-from confluent_kafka import Consumer, Producer, KafkaException, KafkaError
 from subprocess import check_call, CalledProcessError
+from confluent_kafka import Consumer, Producer, KafkaError
+import requests
+import boto3
 import paramiko
 from .util.aes_cipher import AesCipher
 
 
-class ApplicationBase(object):
-    """ Sample application to test registration and communication with Spectrum Discover.
+class ApplicationBase():
+    """Application SDK for registration and communication with Spectrum Discover.
 
     This script expect configuration parameters to be specified as environment
     variables.
@@ -48,6 +48,7 @@ class ApplicationBase(object):
     """
 
     def __init__(self, reg_info):
+        """Initialize the ApplicationBase."""
         self.reg_info = reg_info.copy()
 
         # Instantiate logger
@@ -116,6 +117,13 @@ class ApplicationBase(object):
         self.work_q_name = '%s_work' % self.application_name
         self.compl_q_name = '%s_compl' % self.application_name
 
+        # Kafka config - updated as part of registration
+        self.kafka_host = None
+        self.kafka_ip = None
+        self.kafka_port = None
+        self.kafka_producer = None
+        self.kafka_consumer = None
+
         # Application running status
         self.application_enabled = False
 
@@ -124,6 +132,7 @@ class ApplicationBase(object):
 
         # a mapping dict of connection to client
         self.connections = {}
+        self.conn_details = None
 
         self.logger.info("Initialize to host: %s", self.sd_api)
         self.logger.info("Application name: %s", self.application_name)
@@ -133,7 +142,8 @@ class ApplicationBase(object):
         if not self.application_user:
             raise Exception("Authentication requires APPLICATION_USER and APPLICATION_USER_PASSWORD")
 
-    def _create_host_from_env(self, host, port, protocol):
+    @staticmethod
+    def _create_host_from_env(host, port, protocol):
 
         host = os.environ.get(host, 'localhost')
         protocol = os.environ.get(protocol, 'http')
@@ -142,12 +152,12 @@ class ApplicationBase(object):
                 {'protocol': protocol, 'host': host, 'port': port})
 
     def register_application(self):
-        """ Attempt to self-register an application and receive an application registration
-        response. If the application is already registered a 409 will be returned,
+        """Attempt to self-register an application and receive an application registration response.
+
+        If the application is already registered a 409 will be returned,
         which means another instance of this application is already registered. In
         that case the application should attempt a GET request to registration endpoint.
         """
-
         if self.is_kube:
             headers = {
                 'Content-Type': 'application/json',
@@ -156,7 +166,8 @@ class ApplicationBase(object):
             auth = requests.auth.HTTPBasicAuth(self.application_user, self.application_user_password)
         else:
             # Get authentication token if not present
-            if not self.application_token: self.obtain_token()
+            if not self.application_token:
+                self.obtain_token()
 
             headers = {
                 'Content-Type': 'application/json',
@@ -179,7 +190,7 @@ class ApplicationBase(object):
             raise_except_http([200, 201, 409], response.status_code)
 
             if response.status_code == 409:
-                self.logger.warn('Application already registered, initiating GET request (application:%s)' % self.application_name)
+                self.logger.warning('Application already registered, initiating GET request (application:%s)', self.application_name)
                 return get_register()
 
             return response.json()
@@ -199,16 +210,18 @@ class ApplicationBase(object):
                 if reg['agent'] == self.application_name:
                     return reg
 
+            return None
+
         try:
             resp_json = post_register()
 
             self.update_registration_info(resp_json)
-        except Exception as e:
-            self.logger.error(Exception('Application POST registration request FAIL - (%s)' % str(e)))
+        except Exception as exc:
+            self.logger.error(Exception('Application POST registration request FAIL - (%s)' % str(exc)))
             raise
 
     def update_registration_info(self, reg_response):
-        # Record topic names and broker IP/port
+        """Record topic names and broker IP/port."""
         self.kafka_ip = reg_response['broker_ip']
         self.kafka_port = reg_response['broker_port']
         self.work_q_name = reg_response['work_q']
@@ -216,15 +229,15 @@ class ApplicationBase(object):
         self.kafka_host = "%s:%s" % (self.kafka_ip, self.kafka_port)
 
         self.logger.info("Application is registered")
-        self.logger.info("Kafka host: %s" % self.kafka_host)
-        self.logger.info("Application attached to work queue: %s" % self.work_q_name)
-        self.logger.info("Application attached to compl queue: %s" % self.compl_q_name)
+        self.logger.info("Kafka host: %s", self.kafka_host)
+        self.logger.info("Application attached to work queue: %s", self.work_q_name)
+        self.logger.info("Application attached to compl queue: %s", self.compl_q_name)
 
     def get_kafka_certificates(self):
-        """ Download the client certificate, client key, and CA root certificate
-        via REST API, parse response and save certificates to files.
-        """
+        """Download the client certificate, client key, and CA root certificate via REST API.
 
+        Parse response and save certificates to files.
+        """
         self.logger.info("Download certificates and save to files")
 
         response = self.download_certificates()
@@ -235,7 +248,8 @@ class ApplicationBase(object):
 
         certs = match(certs_regex, response.decode('utf-8'))
 
-        if not certs: raise Exception("Cannot parse certificates from response: %s" % response)
+        if not certs:
+            raise Exception("Cannot parse certificates from response: %s" % response)
 
         client_cert, client_key, ca_root_cert = certs.groups()
 
@@ -248,18 +262,18 @@ class ApplicationBase(object):
         def save_file(file_path, content):
             self.logger.info("Save file: %s", file_path)
 
-            with open(file_path, 'w') as f:
-                f.write(content)
+            with open(file_path, 'w') as file:
+                file.write(content)
 
         save_file(self.kafka_client_cert, client_cert)
         save_file(self.kafka_client_key, client_key)
         save_file(self.kafka_root_cert, ca_root_cert)
 
     def download_certificates(self):
-        """ Download the client certificate, client key, and CA root certificate via REST API to
-        be imported into the application's trust store.
-        """
+        """Download the client certificate, client key, and CA root certificate via REST API.
 
+        Import into the application's trust store.
+        """
         self.logger.info("Loading certificates from server: %s", self.certificates_url)
 
         # Get authentication token if not present
@@ -271,7 +285,9 @@ class ApplicationBase(object):
             auth = requests.auth.HTTPBasicAuth(self.application_user, self.application_user_password)
         else:
             # Get authentication token if not present
-            if not self.application_token: self.obtain_token()
+            if not self.application_token:
+                self.obtain_token()
+
             headers = {
                 'Content-Type': 'application/json',
                 'Authorization': 'Bearer %s' % self.application_token
@@ -280,54 +296,58 @@ class ApplicationBase(object):
 
         try:
             response = requests.get(url=self.certificates_url, verify=False, headers=headers, auth=auth)
-            self.logger.debug("CA server response (%s)" % response)
+            self.logger.debug("CA server response (%s)", response)
 
             # Return certificates data
-            if response.ok: return response.content
+            if response.ok:
+                return response.content
 
-        except requests.exceptions.HTTPError as e:
-            err = "Http Error :: %s " % e
-        except requests.exceptions.ConnectionError as e:
-            err = "Error Connecting :: %s " % e
-        except requests.exceptions.Timeout as e:
-            err = "Timeout Error :: %s " % e
-        except requests.exceptions.RequestException as e:
-            err = "Request Error :: %s " % e
-        except Exception as e:
-            err = "Request Error :: %s " % str(e)
+        except requests.exceptions.HTTPError as exc:
+            err = "Http Error :: %s " % exc
+        except requests.exceptions.ConnectionError as exc:
+            err = "Error Connecting :: %s " % exc
+        except requests.exceptions.Timeout as exc:
+            err = "Timeout Error :: %s " % exc
+        except requests.exceptions.RequestException as exc:
+            err = "Request Error :: %s " % exc
+        except Exception as exc:
+            err = "Request Error :: %s " % str(exc)
 
         raise Exception(err)
 
     def configure_kafka(self):
+        """Instantiate producer and consumer."""
         # Instantiate producer
         p_conf = {
             'bootstrap.servers': '%s' % self.kafka_host,
             'ssl.certificate.location': self.kafka_client_cert,
             'ssl.key.location': self.kafka_client_key,
-            'security.protocol': 'ssl', 'ssl.ca.location': self.kafka_root_cert }
+            'security.protocol': 'ssl', 'ssl.ca.location': self.kafka_root_cert}
 
         self.kafka_producer = Producer(p_conf)
 
         # Instantiate consumer
         c_conf = {
             'bootstrap.servers': '%s' % self.kafka_host,
-            'group.id': 'myagent_grp', 'session.timeout.ms': 6000,
-            'default.topic.config': { 'auto.offset.reset': 'smallest' },
+            'group.id': 'myagent_grp',
+            'session.timeout.ms': 6000,
+            'default.topic.config': {'auto.offset.reset': 'smallest'},
             'ssl.certificate.location': self.kafka_client_cert,
             'ssl.key.location': self.kafka_client_key,
             'enable.auto.commit': 'false',
-            'security.protocol': 'ssl', 'ssl.ca.location': self.kafka_root_cert }
+            'security.protocol': 'ssl', 'ssl.ca.location': self.kafka_root_cert}
 
         self.kafka_consumer = Consumer(c_conf)
 
     def obtain_token(self):
-        """ Any application SDK requests to policy engine require role based
+        """Retrieve role based token for authentication.
+
+        Any application SDK requests to policy engine require role based
         token authentication. The user role assigned to this application must have an
         authenticated account on the server created externally by an
         admin.
         """
-
-        self.logger.info('Application obtaining token from URL: %s' % self.identity_auth_url)
+        self.logger.info('Application obtaining token from URL: %s', self.identity_auth_url)
 
         try:
             headers = {}
@@ -338,17 +358,18 @@ class ApplicationBase(object):
             # check response from identity auth server
             if response.status_code == 200:
                 self.application_token = response.headers['X-Auth-Token']
-                self.logger.info('Application token retrieved: %s...' % self.application_token[:10])
+                self.logger.info('Application token retrieved: %s...', self.application_token[:10])
                 return self.application_token
 
             raise Exception("Attempt to obtain token returned (%d)" % response.status_code)
-        except Exception as e:
-            self.logger.error('Application failed to obtain token (%s)' % str(e))
+        except Exception as exc:
+            self.logger.error('Application failed to obtain token (%s)', str(exc))
             raise
         return
 
     def start_kafka_listener(self):
-        self.logger.info("Looking for new work on the %s topic ..." % self.work_q_name)
+        """Start kafka consumer polling."""
+        self.logger.info("Looking for new work on the %s topic ...", self.work_q_name)
 
         self.kafka_consumer.subscribe([self.work_q_name])
 
@@ -364,8 +385,8 @@ class ApplicationBase(object):
                 try:
                     # Process the message with the implementation provided by the client
                     response_msg = self.on_application_message(request_msg)
-                except Exception as e:
-                    self.logger.error("Error processing Kafka message: %s" % str(e))
+                except Exception as exc:
+                    self.logger.error("Error processing Kafka message: %s", str(exc))
                     continue
 
                 if response_msg:
@@ -377,14 +398,14 @@ class ApplicationBase(object):
                         self.kafka_producer.produce(self.compl_q_name, json_response_msg)
                         self.kafka_producer.flush()
                     except Exception:
-                        self.logger.error("Could not produce message to topic '%s'" % self.compl_q_name)
-                        self.logger.error("--| Job Response Message: %s" % json_response_msg)
+                        self.logger.error("Could not produce message to topic '%s'", self.compl_q_name)
+                        self.logger.error("--| Job Response Message: %s", json_response_msg)
 
             if not self.application_enabled:
                 break
 
     def decode_msg(self, msg):
-        # Decode JSON message and log errors
+        """Decode JSON message and log errors."""
         if msg:
             if not msg.error():
                 return json.loads(msg.value().decode('utf-8'))
@@ -393,32 +414,33 @@ class ApplicationBase(object):
                 self.logger.error(msg.error().code())
 
     def on_application_message(self, message):
-        """ Implement this method is all that is needed to implement custom application.
+        """Implement this method is all that is needed to implement custom application.
+
         This methid will be called when Kafka consumer receives a message.
         If value is returned from this method it will be delivered to Kafka producer.
         """
-
         if self.message_handler:
             return self.message_handler(self, message)
 
-        self.logger.warn("Please implement `on_application_message` method or supply"
-            " function to the `subscribe` method to process application messages.")
+        self.logger.warning("Please implement `on_application_message` method or supply"
+                            " function to the `subscribe` method to process application messages.")
 
     def subscribe(self, message_handler):
-        """ Subscribe to Spectrum Discover messages. Supplied function is called
+        """Subscribe to Spectrum Discover messages.
+
+        Supplied function is called
         when Kafka consumer receives a message. If value is returned from this function
         it will be delivered to Kafka producer.
         """
-
         if message_handler:
             self.message_handler = message_handler
 
     def get_connection_details(self):
-        """ Read the connection details from Spectrum Discover, and store them
-        for future file retrieval. May require setup - sftp connections or
+        """Read the connection details from Spectrum Discover.
+
+        Store them for future file retrieval. May require setup - sftp connections or
         nfs mounts.
         """
-
         self.logger.debug("Querying information for connections")
         try:
 
@@ -429,7 +451,8 @@ class ApplicationBase(object):
                 headers['X-ALLOW-BASIC-AUTH-SD'] = 'true'
                 auth = requests.auth.HTTPBasicAuth(self.application_user, self.application_user_password)
             else:
-                if not self.application_token: self.obtain_token()
+                if not self.application_token:
+                    self.obtain_token()
                 headers['Authorization'] = 'Bearer ' + self.application_token
                 auth = None
 
@@ -438,19 +461,19 @@ class ApplicationBase(object):
             self.logger.debug("Connection Manager response (%s)", response)
 
             # return certificate data
-            if(response.ok):
+            if response.ok:
                 return json.loads(response.content)
 
-        except requests.exceptions.HTTPError as e:
-            err = "Http Error :: %s " % e
-        except requests.exceptions.ConnectionError as e:
-            err = "Error Connecting :: %s " % e
-        except requests.exceptions.Timeout as e:
-            err = "Timeout Error :: %s " % e
-        except requests.exceptions.RequestException as e:
-            err = "Request Error :: %s " % e
-        except Exception as e:
-            err = "Request Error :: %s " % str(e)
+        except requests.exceptions.HTTPError as exc:
+            err = "Http Error :: %s " % exc
+        except requests.exceptions.ConnectionError as exc:
+            err = "Error Connecting :: %s " % exc
+        except requests.exceptions.Timeout as exc:
+            err = "Timeout Error :: %s " % exc
+        except requests.exceptions.RequestException as exc:
+            err = "Request Error :: %s " % exc
+        except Exception as exc:
+            err = "Request Error :: %s " % str(exc)
 
         raise Exception(err)
 
@@ -460,20 +483,20 @@ class ApplicationBase(object):
             response = requests.get(url, auth=(manager_username, manager_password))
 
             if response is None:
-                self.logger.error("This manager site cannot be reached: {}. ".format(url))
+                self.logger.error("This manager site cannot be reached: %s. ", url)
 
             if not response.ok:
-                self.logger.error("Failed to connect to {}. Response status: {} {}. "
-                          .format(url, response.status_code, response.reason))
+                self.logger.error("Failed to connect to %s. Response status: %s %s. ",
+                                  url, response.status_code, response.reason)
             return response
         except Exception as err:
-            self.logger.error("Error type %s when getting COS credentials" % type(err))
+            self.logger.error("Error type %s when getting COS credentials", type(err))
 
     def manager_api_get_aws_keys(self, manager_ip, manager_username, manager_password):
         """Get AWS keys from the manager API.
+
         Calls the manager api listMyAccessKeys.adm.
         """
-
         url = "https://{0}/manager/api/json/1.0/listMyAccessKeys.adm".format(manager_ip)
         response = self.call_manager_api(url, manager_username, manager_password)
 
@@ -494,6 +517,7 @@ class ApplicationBase(object):
             return (None, None)
 
     def create_cos_connection(self, conn):
+        """Create a COS connection for retrieving docs."""
         additional_info = json.loads(conn['additional_info'])
         aws_access_key_id = additional_info.get('accesser_access_key', None)
         aws_secret_access_key = additional_info.get('accesser_secret_key', None)
@@ -507,18 +531,18 @@ class ApplicationBase(object):
                 if conn['host'] and manager_username and manager_password:
                     manager_password = self.cipher.decrypt(manager_password)
                     (aws_access_key_id, aws_secret_access_key) = self.manager_api_get_aws_keys(conn['host'], manager_username,
-                                                                                          manager_password)
+                                                                                               manager_password)
             else:
                 aws_secret_access_key = self.cipher.decrypt(aws_secret_access_key)
         except Exception as err:
-            log_error("Credentials problem '%s' with COS connection %s" % (str(err), conn['name']), 'MAIN')
+            self.logger.error("Credentials problem '%s' with COS connection %s", str(err), conn['name'])
 
         client = boto3.client(
             's3',
             endpoint_url='http://' + additional_info['accesser_address'],
             aws_access_key_id=aws_access_key_id,
             aws_secret_access_key=aws_secret_access_key
-                    )
+        )
 
         self.connections[(conn['datasource']), conn['cluster']] = ('COS', client)
 
@@ -538,6 +562,7 @@ class ApplicationBase(object):
                 self.logger.error('Failed to mount remote NFS folder %s', host)
 
     def create_nfs_connection(self, conn):
+        """Create a NFS connection for retrieving docs using mount point."""
         additional_info = json.loads(conn['additional_info'])
 
         remote_nfs_mount = conn['host'] + ':' + conn['mount_point']
@@ -550,7 +575,7 @@ class ApplicationBase(object):
         self.connections[(conn['datasource']), conn['cluster']] = ('NFS', conn)
 
     def create_scale_connection(self, conn):
-        """Connect to remote host using shared RSA key."""
+        """Create a Scale connection for retrieving docs using sftp and RSA key."""
         if conn['online']:
             try:
                 xport = paramiko.Transport(conn['host'])
@@ -571,13 +596,15 @@ class ApplicationBase(object):
                 self.logger.error('Error when attempting Scale connection: %s', str(ex))
 
     def connect_to_datasources(self):
+        """Loop through datasources and create connections."""
         self.conn_details = self.get_connection_details()
         for conn in self.conn_details:
             if conn['platform'] == "IBM COS":
                 if self.is_kube and os.environ.get('CIPHER_KEY'):
                     self.create_cos_connection(conn)
                 else:
-                    self.logger.warn("COS connections are only supported within kubernetes pods. Skipping connection: %s", conn['datasource'])
+                    self.logger.warning("COS connections are only supported within kubernetes pods. "
+                                        "Skipping connection: %s", conn['datasource'])
             elif conn['platform'] == "NFS":
                 self.create_nfs_connection(conn)
             elif conn['platform'] == "Spectrum Scale":
@@ -586,6 +613,7 @@ class ApplicationBase(object):
                 self.logger.error("Unsupported connection platform %s", conn['platform'])
 
     def start(self):
+        """Start Application."""
         self.logger.info("Starting Spectrum Discover application...")
 
         # Set application running status
@@ -607,6 +635,7 @@ class ApplicationBase(object):
         self.application_token = None
 
     def stop(self):
+        """Stop Application."""
         self.logger.info("Stopping Spectrum Discover application...")
 
         # Disable application

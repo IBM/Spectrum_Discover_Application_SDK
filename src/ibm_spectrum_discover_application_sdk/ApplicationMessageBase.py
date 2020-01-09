@@ -17,9 +17,9 @@ from confluent_kafka import KafkaError
 
 ENCODING = 'utf-8'
 
-class ApplicationMessageBase(object):
-    '''
-    A library to allow Applications to interact with a message source (only Kafka so far).
+class ApplicationMessageBase():
+    """A library to allow Applications to interact with a message source (only Kafka so far).
+
     Deals with message retrieval, messaging producing, and handles scalabilty of
     multiple clients. Must be created from an existing application, from which it
     can take the connection details.
@@ -29,12 +29,10 @@ class ApplicationMessageBase(object):
 
     LOG_LEVEL .................. Log verbosity level (ERROR, WARNING, INFO, DEBUG)
                                  - default: DEBUG
-    '''
+    """
 
     def __init__(self, application):
-        '''
-        Store Kafka connections from application
-        '''
+        """Store Kafka connections from application."""
         self.kafka_consumer = application.kafka_consumer
         self.kafka_consumer.subscribe([application.work_q_name])
         self.kafka_producer = application.kafka_producer
@@ -51,12 +49,12 @@ class ApplicationMessageBase(object):
         self.logger = logging.getLogger(__name__)
 
     def parse_work_message(self, msg):
-        '''
-        Takes an application work message, and parses it into a dictionary.
+        """Take an application work message, and parses it into a dictionary.
+
         Elements:
             action_params : As passed by PE, needs to be understood by calling application
             docs: list of docs to apply the actions to
-        '''
+        """
         parsed_msg = {}
 
         try:
@@ -68,7 +66,7 @@ class ApplicationMessageBase(object):
         return parsed_msg
 
     def decode_msg(self, msg):
-        # Decode JSON message and log errors
+        """Decode JSON message and log errors."""
         if msg:
             if not msg.error():
                 return json.loads(msg.value().decode(ENCODING))
@@ -77,6 +75,7 @@ class ApplicationMessageBase(object):
                 self.logger.error(msg.error().code())
 
     def read_message(self, timeout=10):
+        """Read JSON message and log errors."""
         msg_string = self.kafka_consumer.poll(timeout=timeout)
         if msg_string:
             try:
@@ -90,6 +89,7 @@ class ApplicationMessageBase(object):
         return msg
 
     def send_reply(self, response_msg):
+        """Send message on kafka completion queue."""
         self.kafka_producer.produce(self.compl_q_name, str(response_msg))
         self.kafka_producer.flush()
 
@@ -97,11 +97,11 @@ class ApplicationMessageBase(object):
         return
 
 
-class ApplicationReplyMessage(object):
-    ''' The reply message, and functions to build it.
-    '''
+class ApplicationReplyMessage():
+    """The reply message, and functions to build it."""
 
     def __init__(self, msg):
+        """Initialize."""
         self.reply = {}
         self.reply['mo_ver'] = msg['mo_ver']
         self.reply['run_id'] = msg['run_id']
@@ -109,6 +109,7 @@ class ApplicationReplyMessage(object):
         self.reply['docs'] = []
 
     def add_result(self, status, key, tags=None):
+        """Add result to reply message queue."""
         result = {'status': status, 'fkey': key.fkey, 'path': key.path if isinstance(key.path, str) else key.path.decode(ENCODING)}
         if tags:
             if isinstance(tags, dict):
@@ -118,4 +119,5 @@ class ApplicationReplyMessage(object):
         self.reply['docs'].append(result)
 
     def __str__(self):
+        """Override string method for debug printing."""
         return json.dumps(self.reply)
