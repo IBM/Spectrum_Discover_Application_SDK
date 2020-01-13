@@ -20,11 +20,11 @@ with open("README.md", "r") as fh:
 
 setup(
     name='ibm_spectrum_discover_application_sdk',
-    version='0.0.3',
+    version='0.0.4',
     description='IBM Spectrum Discover Application SDK',
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/IBM/Spectrum_Discover_App_Catalog/application-sdk",
+    url="https://github.com/IBM/Spectrum_Discover_Application_SDK",
     author='Drew Olson',
     author_email='drolson@us.ibm.com',
     packages=find_packages('src'),
