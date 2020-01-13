@@ -93,6 +93,17 @@ class ApplicationBase():
             self.sd_connmgr = env('CONNMGR_HOST', self.sd_api)
             self.sd_auth = env('AUTH_HOST', self.sd_api)
 
+        # Make sure username and password were set. Everything has a workable default but these two.
+        valid_username_password = True
+        if not self.application_user:
+            self.logger.error("APPLICATION_USER is not set via an environment variable.")
+            valid_username_password = False
+        if not self.application_user_password:
+            self.logger.error("APPLICATION_USER_PASSWORD is not set via an environment variable.")
+            valid_username_password = False
+        if not valid_username_password:
+            raise SystemExit("Missing APPLICATION_USER and or APPLICATION_USER_PASSWORD environment variable.")
+
         # Endpoints used by application
         policyengine_endpoint = partial(urljoin, self.sd_policy)
         connmgr_endpoint = partial(urljoin, self.sd_connmgr)
