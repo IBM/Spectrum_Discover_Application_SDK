@@ -590,9 +590,9 @@ class ApplicationBase():
         if conn['online']:
             try:
                 xport = paramiko.Transport(conn['host'])
-                if self.is_kube or self.is_docker:
+                if (self.is_kube or self.is_docker) and os.path.exists('/keys/id_rsa'):
                     pkey = paramiko.RSAKey.from_private_key_file('/keys/id_rsa')
-                elif os.path.exists('/gpfs/gpfs0/connections/scale/id_rsa'):
+                elif os.path.exists('/gpfs/gpfs0/connections/scale/id_rsa'): # Running on IBM Spectrum Discover
                     pkey = paramiko.RSAKey.from_private_key_file('/gpfs/gpfs0/connections/scale/id_rsa')
                 else: # Assume running locally on scale node
                     self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale Local', conn)
