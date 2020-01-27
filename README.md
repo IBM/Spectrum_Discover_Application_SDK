@@ -25,6 +25,7 @@ If you have local modifications to the SDK that you would like to send via a Pul
 locally by creating a python wheel.
 You can create a local python wheel with the following command:
 ```
+python3.6 -m pip install wheel
 python3.6 setup.py sdist bdist_wheel --universal --dist=dist
 ```
 
