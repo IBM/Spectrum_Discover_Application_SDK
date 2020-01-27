@@ -59,7 +59,7 @@ class DocumentRetrievalBase():
 
         Receives a document key that uniquely identifies a particular
         object, and is responsible for retrieving that object and
-        returning the filepath.
+        returning the filepath as a string.
 
         Returns None if object was not able to be retrieved.
         """
@@ -206,7 +206,7 @@ class DocumentRetrievalLocalScale(DocumentRetrievalBase):
 
     def get_document(self, key):
         """Return Document Key."""
-        return key.path
+        return key.path.decode(ENCODING)
 
     def cleanup_document(self):
         """Cleanup files as needed."""
