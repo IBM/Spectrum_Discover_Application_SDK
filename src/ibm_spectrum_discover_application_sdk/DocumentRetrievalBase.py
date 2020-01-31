@@ -63,7 +63,7 @@ class DocumentRetrievalBase():
 
         Returns None if object was not able to be retrieved.
         """
-        self.logger.error("get_document has not been implemented for this class")
+        self.logger.warning("get_document has not been implemented for this class")
         return None
 
     def get_headers(self, key):
@@ -75,7 +75,7 @@ class DocumentRetrievalBase():
 
         Returns None if object was not able to be retrieved.
         """
-        self.logger.error("get_headers has not been implemented for this class")
+        self.logger.warning("get_headers has not been implemented for this class")
         return None
 
     def cleanup_document(self):
@@ -86,7 +86,7 @@ class DocumentRetrievalBase():
 
         Returns None.
         """
-        self.logger.error("cleanup_document has not been implemented for this class")
+        self.logger.warning("cleanup_document has not been implemented for this class")
 
 
 class DocumentRetrievalCOS(DocumentRetrievalBase):

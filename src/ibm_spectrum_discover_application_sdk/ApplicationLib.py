@@ -570,7 +570,7 @@ class ApplicationBase():
                 self.logger.info('Mounted remote NFS folder %s', host)
             except CalledProcessError:
                 # Not fatal, this might not be an active connection
-                self.logger.error('Failed to mount remote NFS folder %s', host)
+                self.logger.warning('Failed to mount remote NFS folder %s', host)
 
     def create_nfs_connection(self, conn):
         """Create a NFS connection for retrieving docs using mount point."""
@@ -604,7 +604,7 @@ class ApplicationBase():
 
             except (paramiko.ssh_exception.BadHostKeyException, paramiko.ssh_exception.AuthenticationException,
                     paramiko.ssh_exception.SSHException, paramiko.ssh_exception.NoValidConnectionsError) as ex:
-                self.logger.error('Error when attempting Scale connection: %s', str(ex))
+                self.logger.warning('Error when attempting Scale connection: %s', str(ex))
 
     def connect_to_datasources(self):
         """Loop through datasources and create connections."""
@@ -621,7 +621,7 @@ class ApplicationBase():
             elif conn['platform'] == "Spectrum Scale":
                 self.create_scale_connection(conn)
             else:
-                self.logger.error("Unsupported connection platform %s", conn['platform'])
+                self.logger.warning("Unsupported connection platform %s", conn['platform'])
 
     def start(self):
         """Start Application."""
