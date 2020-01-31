@@ -22,7 +22,8 @@ An example application using these libraries is also provided in this repository
 Building a python wheel
 ===================
 If you have local modifications to the SDK that you would like to send via a Pull Request (PR), you can test your build
-locally by creating a python wheel.
+locally by creating a python wheel. If you are not making changes to the SDK and plan to upstream, there is no need to run
+the below commands and you can use the currently published SDK on pypi.
 You can create a local python wheel with the following command:
 ```
 python3.6 -m pip install wheel
