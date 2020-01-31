@@ -88,6 +88,13 @@ class DocumentRetrievalBase():
         """
         self.logger.warning("cleanup_document has not been implemented for this class")
 
+    def create_file_path(self, prefix, path):
+        """Return the tmpfile_path with filetype as string."""
+        self.logger.debug('filepath prefix: %s, path: %s', prefix, path.decode(ENCODING))
+        if '.' in path.decode(ENCODING):
+            return prefix + '.' + path.decode(ENCODING).split('.')[-1]
+        return prefix
+
 
 class DocumentRetrievalCOS(DocumentRetrievalBase):
     """Create a COS document class.
@@ -95,21 +102,23 @@ class DocumentRetrievalCOS(DocumentRetrievalBase):
     This will act appropriately upon COS documents that have been downloaded as temp files.
     """
 
+    filepath = None
+
     def get_document(self, key):
         """Return document filepath."""
         content = None
-        filepath = None
+        self.filepath = None
 
         if self.client:
             obj = self.client.get_object(Bucket=key.datasource, Key=key.path.decode(ENCODING).split('/', 1)[1])
             content = obj['Body'].read()
-            filepath = '/tmp/cosfile_' + str(os.getpid())
-            with open(filepath, 'w', encoding=ENCODING) as file:
+            self.filepath = self.create_file_path('/tmp/cosfile_' + str(os.getpid()), key.path)
+            with open(self.filepath, 'w', encoding=ENCODING) as file:
                 file.write(content.decode(ENCODING, 'replace'))
         else:
-            self.logger.error('Could not access file %s', key.path)
+            self.logger.error('Could not access file %s', key.path.decode(ENCODING))
 
-        return filepath
+        return self.filepath
 
     def get_headers(self, key):
         """Return the COS HTTPHeaders for a key, bucket."""
@@ -128,13 +137,12 @@ class DocumentRetrievalCOS(DocumentRetrievalBase):
 
     def cleanup_document(self):
         """Cleanup files as needed."""
-        filepath = '/tmp/cosfile_' + str(os.getpid())
-        self.logger.debug("COS: Attempting to delete file: %s", filepath)
+        self.logger.debug("COS: Attempting to delete file: %s", self.filepath)
 
         try:
-            os.remove(filepath)
+            os.remove(self.filepath)
         except FileNotFoundError:
-            self.logger.debug('No file: %s to delete.', filepath)
+            self.logger.debug('No file: %s to delete.', self.filepath)
 
 
 class DocumentRetrievalNFS(DocumentRetrievalBase):
@@ -144,18 +152,20 @@ class DocumentRetrievalNFS(DocumentRetrievalBase):
     No need to download or cleanup since accessed direclty upon the mount point.
     """
 
+    filepath = None
+
     def get_document(self, key):
         """Return document filepath."""
-        filepath = None
+        self.filepath = None
 
         if self.client:
             mount_path_prefix = self.client['additional_info']['local_mount']
             source_path_prefix = self.client['mount_point']
-            filepath = re.sub('^' + source_path_prefix, mount_path_prefix, key.path.decode(ENCODING))
+            self.filepath = re.sub('^' + source_path_prefix, mount_path_prefix, key.path.decode(ENCODING))
         else:
             print('No document match')
 
-        return filepath
+        return self.filepath
 
     def cleanup_document(self):
         """Cleanup files as needed."""
@@ -168,33 +178,37 @@ class DocumentRetrievalScale(DocumentRetrievalBase):
     This will act appropriately upon Scale documents that have been downloaded as temp files.
     """
 
+    filepath = None
+
     def get_document(self, key):
         """Return document filepath."""
-        filepath = None
+        self.filepath = None
 
         if self.client:
             try:
-                filepath = '/tmp/scalefile_' + str(os.getpid())
-                self.client.get(key.path, filepath)
+                self.filepath = self.create_file_path('/tmp/scalefile_' + str(os.getpid()), key.path)
+                self.logger.debug(self.filepath)
+                self.client.get(key.path, self.filepath)
             except UnicodeDecodeError:
-                self.logger.error('Could not decode file %s', key.path)
+                self.logger.error('Could not decode file %s', key.path.decode(ENCODING))
             except FileNotFoundError:
-                self.logger.error('Could not find file %s', key.path)
+                self.logger.error('Could not find file %s', key.path.decode(ENCODING))
+            except OSError: # Seen when scale nsd disk is down and file is not accessible
+                self.logger.error('Could not transfer file %s', key.path.decode(ENCODING))
 
         else:
             print('No document match')
 
-        return filepath
+        return self.filepath
 
     def cleanup_document(self):
         """Cleanup files as needed."""
-        filepath = '/tmp/scalefile_' + str(os.getpid())
-        self.logger.debug("SCALE: Attempting to delete file: %s", filepath)
+        self.logger.debug("SCALE: Attempting to delete file: %s", self.filepath)
 
         try:
-            os.remove(filepath)
+            os.remove(self.filepath)
         except FileNotFoundError:
-            self.logger.debug('No file: %s to delete.', filepath)
+            self.logger.debug('No file: %s to delete.', self.filepath)
 
 
 class DocumentRetrievalLocalScale(DocumentRetrievalBase):
