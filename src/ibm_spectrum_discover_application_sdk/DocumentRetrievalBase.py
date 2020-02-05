@@ -33,6 +33,8 @@ class DocumentRetrievalFactory:
                 return DocumentRetrievalScale(client)
             elif platform == 'Spectrum Scale Local':
                 return DocumentRetrievalLocalScale(client)
+            elif platform == 'SMB/CIFS':
+                return DocumentRetrievalSMB(client)
         return None
 
 
@@ -163,7 +165,7 @@ class DocumentRetrievalNFS(DocumentRetrievalBase):
             source_path_prefix = self.client['mount_point']
             self.filepath = re.sub('^' + source_path_prefix, mount_path_prefix, key.path.decode(ENCODING))
         else:
-            print('No document match')
+            self.logger.info('No document match')
 
         return self.filepath
 
@@ -197,7 +199,7 @@ class DocumentRetrievalScale(DocumentRetrievalBase):
                 self.logger.error('Could not transfer file %s', key.path.decode(ENCODING))
 
         else:
-            print('No document match')
+            self.logger.info('No document match')
 
         return self.filepath
 
@@ -225,6 +227,32 @@ class DocumentRetrievalLocalScale(DocumentRetrievalBase):
     def cleanup_document(self):
         """Cleanup files as needed."""
         self.logger.debug("Scale Local: Not doing any cleanup.")
+
+
+class DocumentRetrievalSMB(DocumentRetrievalBase):
+    """Create a SMB document class.
+
+    This will act appropriately upon smb documents.
+    No need to download or cleanup since accessed direclty upon the mount point.
+    """
+
+    filepath = None
+
+    def get_document(self, key):
+        """Return document filepath."""
+        self.filepath = None
+
+        if self.client:
+            mount_path_prefix = self.client['additional_info']['local_mount']
+            self.filepath = mount_path_prefix + key.path.decode(ENCODING)
+        else:
+            self.logger.info('No document match')
+
+        return self.filepath
+
+    def cleanup_document(self):
+        """Cleanup files as needed."""
+        self.logger.debug("SMB: Not doing any cleanup.")
 
 
 class DocumentKey(object):

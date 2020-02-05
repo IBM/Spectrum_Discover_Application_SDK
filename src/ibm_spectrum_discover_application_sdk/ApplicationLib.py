@@ -14,6 +14,7 @@ import json
 import logging
 import subprocess
 from subprocess import check_call, CalledProcessError
+import tempfile
 from io import open
 from re import match
 from functools import partial
@@ -571,6 +572,60 @@ class ApplicationBase():
                 paramiko.ssh_exception.SSHException, paramiko.ssh_exception.NoValidConnectionsError) as ex:
             self.logger.warning('Error when attempting Scale connection: %s', str(ex))
 
+    def mount_smb(self, conn, local_mount):
+        """Mount the SMB file system."""
+        if not conn['host']:
+            self.logger.warning('Host not defined so cannot create SMB mount.')
+            return
+        if not conn['user']:
+            self.logger.warning('Could not retrieve SMB user.')
+            return
+        if not conn['password']:
+            self.logger.warning('Could not retrieve password for SMB mount.')
+            return
+        if not conn['mount_point']:
+            self.logger.warning('Could not retrieve smb export path.')
+            return
+        if not local_mount:
+            self.logger.warning('Host mount path could not be created.')
+            return
+
+        host = conn['host']
+        password = self.cipher.decrypt(conn['password'])
+        export_path = conn['mount_point']
+
+        if '\\' in conn['user']:
+            (domain, user) = conn['user'].split('\\')
+        elif '/' in conn['user']:
+            (domain, user) = conn['user'].split('/')
+        elif '@' in conn['user']:
+            (user, domain) = conn['user'].split('@')
+        else:
+            (domain, user) = ('', conn['user'])
+
+        cmd = f'mount -t cifs {export_path} {local_mount} -o user={user} -o password={password} -o ro'
+        if domain:
+            cmd += f' -o domain={domain}'
+
+        try:
+            check_call(cmd, shell=True)
+        except CalledProcessError:
+            # Not fatal, this might not be an active connection
+            self.logger.warning('Failed to mount SMB export %s', host)
+
+    def create_smb_connection(self, conn):
+        """Create a SMB connection for retrieving docs using a cifs mount."""
+        prefix = 'smb_'
+        suffix = '_' + conn['name'] + '_' + conn['datasource']
+        local_mount = tempfile.mkdtemp(suffix=suffix, prefix=prefix)
+
+        conn['additional_info'] = {}
+        conn['additional_info']['local_mount'] = local_mount
+
+        self.mount_smb(conn, local_mount)
+        self.connections[(conn['datasource']), conn['cluster']] = ('SMB/CIFS', conn)
+        self.logger.info('Successfully created smb connection for: %s', conn['name'])
+
     def connect_to_datasources(self):
         """Loop through datasources and create connections."""
         self.conn_details = self.get_connection_details()
@@ -581,6 +636,8 @@ class ApplicationBase():
                 self.create_nfs_connection(conn)
             elif conn['platform'] == "Spectrum Scale":
                 self.create_scale_connection(conn)
+            elif conn['platform'] == "SMB/CIFS":
+                self.create_smb_connection(conn)
             else:
                 self.logger.warning("Unsupported connection platform %s", conn['platform'])
 
