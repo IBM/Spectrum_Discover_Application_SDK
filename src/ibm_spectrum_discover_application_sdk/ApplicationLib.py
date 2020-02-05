@@ -556,6 +556,7 @@ class ApplicationBase():
         )
 
         self.connections[(conn['datasource']), conn['cluster']] = ('COS', client)
+        self.logger.info('Successfully created cos connection for: %s', conn['name'])
 
     def mount_nfs(self, local_mount, host):
         """Mount the NFS file system."""
@@ -584,6 +585,7 @@ class ApplicationBase():
         conn['additional_info'] = additional_info
 
         self.connections[(conn['datasource']), conn['cluster']] = ('NFS', conn)
+        self.logger.info('Successfully created nfs connection for: %s', conn['name'])
 
     def create_scale_connection(self, conn):
         """Create a Scale connection for retrieving docs using sftp and RSA key."""
@@ -596,11 +598,13 @@ class ApplicationBase():
                     pkey = paramiko.RSAKey.from_private_key_file('/gpfs/gpfs0/connections/scale/id_rsa')
                 else: # Assume running locally on scale node
                     self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale Local', conn)
+                    self.logger.info('Successfully created local scale connection for: %s', conn['name'])
                     return
                 xport.connect(username=conn['user'], pkey=pkey)
                 sftp = paramiko.SFTPClient.from_transport(xport)
                 if sftp:
                     self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale', sftp)
+                    self.logger.info('Successfully created scale connection for: %s', conn['name'])
 
             except (paramiko.ssh_exception.BadHostKeyException, paramiko.ssh_exception.AuthenticationException,
                     paramiko.ssh_exception.SSHException, paramiko.ssh_exception.NoValidConnectionsError) as ex:
