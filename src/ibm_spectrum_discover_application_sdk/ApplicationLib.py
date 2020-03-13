@@ -45,6 +45,9 @@ class ApplicationBase():
 
     LOG_LEVEL .................. Log verbosity level (ERROR, WARNING, INFO, DEBUG)
                                  - default: INFO
+
+    MAX_POLL_INTERVAL .......... kafka config for max.poll.interval.ms
+                                 - default: 86400000
     """
 
     def __init__(self, reg_info):
@@ -338,10 +341,12 @@ class ApplicationBase():
         self.kafka_producer = Producer(p_conf)
 
         # Instantiate consumer
+        max_poll_interval = int(os.environ.get('MAX_POLL_INTERVAL', 86400000))
         c_conf = {
             'bootstrap.servers': '%s' % self.kafka_host,
             'group.id': 'myagent_grp',
             'session.timeout.ms': 6000,
+            'max.poll.interval.ms': max_poll_interval,
             'default.topic.config': {'auto.offset.reset': 'smallest'},
             'ssl.certificate.location': self.kafka_client_cert,
             'ssl.key.location': self.kafka_client_key,
