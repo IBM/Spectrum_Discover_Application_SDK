@@ -12,6 +12,7 @@ import os
 import sys
 import json
 import logging
+import subprocess
 from io import open
 from re import match
 from functools import partial
@@ -23,6 +24,7 @@ import boto3
 import paramiko
 from .util.aes_cipher import AesCipher
 
+ENCODING = 'utf-8'
 
 class ApplicationBase():
     """Application SDK for registration and communication with Spectrum Discover.
@@ -71,8 +73,7 @@ class ApplicationBase():
 
         self.is_kube = os.environ.get('KUBERNETES_SERVICE_HOST') is not None
 
-        self.is_docker = os.environ.get('IS_DOCKER_CONTAINER', False)
-        self.cipher = AesCipher()
+        self.cipher = None
 
         # The user account assigned to this application
         self.application_token = None
@@ -83,11 +84,9 @@ class ApplicationBase():
             self.application_user = env('DB2WHREST_USER', '')
             self.application_user_password = env('DB2WHREST_PASSWORD', '')
 
-            self.sd_auth = env('AUTH_SERVICE_HOST', 'http://auth.spectrum-discover')
-
             self.sd_policy = self._create_host_from_env('POLICY_SERVICE_HOST', 'POLICY_SERVICE_PORT', 'POLICY_PROTOCOL')
             self.sd_connmgr = self._create_host_from_env('CONNMGR_SERVICE_HOST', 'CONNMGR_SERVICE_PORT', 'CONNMGR_PROTOCOL')
-
+            self.sd_auth = env('AUTH_SERVICE_HOST', 'http://auth.spectrum-discover')
         else:
             self.application_user = env('APPLICATION_USER', '')
             self.application_user_password = env('APPLICATION_USER_PASSWORD', '')
@@ -111,10 +110,12 @@ class ApplicationBase():
         policyengine_endpoint = partial(urljoin, self.sd_policy)
         connmgr_endpoint = partial(urljoin, self.sd_connmgr)
         auth_endpoint = partial(urljoin, self.sd_auth)
+        cipher_endpoint = partial(urljoin, self.sd_api)
         self.identity_auth_url = auth_endpoint('auth/v1/token')
         self.registration_url = policyengine_endpoint('policyengine/v1/applications')
         self.certificates_url = policyengine_endpoint('policyengine/v1/tlscert')
         self.connmgr_url = connmgr_endpoint('connmgr/v1/internal/connections')
+        self.cipher_url = cipher_endpoint('api/application/v1/cipherkey')
 
         # Certificates directory and file paths
         cert_dir = env('KAFKA_DIR', 'kafka')
@@ -474,6 +475,16 @@ class ApplicationBase():
 
             response = requests.get(url=self.connmgr_url, verify=False, headers=headers, auth=auth)
 
+            cipherkey = os.environ.get('CIPHER_KEY', None)
+            if cipherkey:
+                self.cipher = AesCipher(cipherkey)
+            else:
+                cipherkey_response = requests.get(url=self.cipher_url, verify=False, headers=headers, auth=auth)
+                if cipherkey_response.ok:
+                    self.cipher = AesCipher(cipherkey_response.json()['cipher_key'])
+                else:
+                    self.logger.warning("Cipher key was not available. This may affect cos and scale connections")
+
             self.logger.debug("Connection Manager response (%s)", response)
 
             # return certificate data
@@ -597,15 +608,22 @@ class ApplicationBase():
         if conn['online']:
             try:
                 xport = paramiko.Transport(conn['host'])
-                if (self.is_kube or self.is_docker) and os.path.exists('/keys/id_rsa'):
-                    pkey = paramiko.RSAKey.from_private_key_file('/keys/id_rsa')
-                elif os.path.exists('/gpfs/gpfs0/connections/scale/id_rsa'): # Running on IBM Spectrum Discover
-                    pkey = paramiko.RSAKey.from_private_key_file('/gpfs/gpfs0/connections/scale/id_rsa')
-                else: # Assume running locally on scale node
+
+                local_conn = False
+                try:
+                    proc = subprocess.Popen(['/usr/lpp/mmfs/bin/mmlscluster'], stdout=subprocess.PIPE)
+                    stdout, _ = proc.communicate()
+                    if conn['cluster'] in stdout.decode(ENCODING):
+                        local_conn = True
+                except Exception:
+                    pass
+
+                if local_conn:
                     self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale Local', conn)
                     self.logger.info('Successfully created local scale connection for: %s', conn['name'])
                     return
-                xport.connect(username=conn['user'], pkey=pkey)
+
+                xport.connect(username=conn['user'], password=self.cipher.decrypt(conn['password']))
                 sftp = paramiko.SFTPClient.from_transport(xport)
                 if sftp:
                     self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale', sftp)
@@ -620,11 +638,7 @@ class ApplicationBase():
         self.conn_details = self.get_connection_details()
         for conn in self.conn_details:
             if conn['platform'] == "IBM COS":
-                if self.is_kube and os.environ.get('CIPHER_KEY'):
-                    self.create_cos_connection(conn)
-                else:
-                    self.logger.warning("COS connections are only supported within kubernetes pods. "
-                                        "Skipping connection: %s", conn['datasource'])
+                self.create_cos_connection(conn)
             elif conn['platform'] == "NFS":
                 self.create_nfs_connection(conn)
             elif conn['platform'] == "Spectrum Scale":
