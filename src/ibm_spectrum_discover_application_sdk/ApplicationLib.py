@@ -13,12 +13,12 @@ import sys
 import json
 import logging
 import subprocess
+from subprocess import check_call, CalledProcessError
 from io import open
 from re import match
 from functools import partial
 from urllib.parse import urljoin
-from subprocess import check_call, CalledProcessError
-from confluent_kafka import Consumer, Producer, KafkaError
+from confluent_kafka import Consumer, Producer
 import requests
 import boto3
 import paramiko
@@ -383,74 +383,6 @@ class ApplicationBase():
             self.logger.error('Application failed to obtain token (%s)', str(exc))
             raise
         return
-
-    def start_kafka_listener(self):
-        """Start kafka consumer polling."""
-        self.logger.info("Looking for new work on the %s topic ...", self.work_q_name)
-
-        self.kafka_consumer.subscribe([self.work_q_name])
-
-        while True:
-            # Poll message from Kafka
-            json_request_msg = self.kafka_consumer.poll(timeout=10.0)
-
-            request_msg = self.decode_msg(json_request_msg)
-
-            if request_msg:
-                self.logger.debug("Job Request Message: %s", request_msg)
-
-                try:
-                    # Process the message with the implementation provided by the client
-                    response_msg = self.on_application_message(request_msg)
-                except Exception as exc:
-                    self.logger.error("Error processing Kafka message: %s", str(exc))
-                    continue
-
-                if response_msg:
-                    self.logger.debug(
-                        "Submitting completion status batch to topic %s", self.compl_q_name)
-
-                    try:
-                        json_response_msg = json.dumps(response_msg)
-                        self.kafka_producer.produce(self.compl_q_name, json_response_msg)
-                        self.kafka_producer.flush()
-                    except Exception:
-                        self.logger.error("Could not produce message to topic '%s'", self.compl_q_name)
-                        self.logger.error("--| Job Response Message: %s", json_response_msg)
-
-            if not self.application_enabled:
-                break
-
-    def decode_msg(self, msg):
-        """Decode JSON message and log errors."""
-        if msg:
-            if not msg.error():
-                return json.loads(msg.value().decode('utf-8'))
-
-            elif msg.error().code() != KafkaError._PARTITION_EOF:
-                self.logger.error(msg.error().code())
-
-    def on_application_message(self, message):
-        """Implement this method is all that is needed to implement custom application.
-
-        This methid will be called when Kafka consumer receives a message.
-        If value is returned from this method it will be delivered to Kafka producer.
-        """
-        if self.message_handler:
-            return self.message_handler(self, message)
-
-        self.logger.warning("Please implement `on_application_message` method or supply"
-                            " function to the `subscribe` method to process application messages.")
-
-    def subscribe(self, message_handler):
-        """Subscribe to Spectrum Discover messages.
-
-        Supplied function is called
-        when Kafka consumer receives a message. If value is returned from this function
-        it will be delivered to Kafka producer.
-        """
-        if message_handler:
-            self.message_handler = message_handler
 
     def get_connection_details(self):
         """Read the connection details from Spectrum Discover.
