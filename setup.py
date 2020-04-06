@@ -20,7 +20,7 @@ with open("README.md", "r") as fh:
 
 setup(
     name='ibm_spectrum_discover_application_sdk',
-    version='0.0.6',
+    version='0.0.7',
     description='IBM Spectrum Discover Application SDK',
     long_description=long_description,
     long_description_content_type="text/markdown",
