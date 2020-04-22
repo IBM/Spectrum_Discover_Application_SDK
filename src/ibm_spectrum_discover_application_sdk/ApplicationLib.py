@@ -537,33 +537,39 @@ class ApplicationBase():
 
     def create_scale_connection(self, conn):
         """Create a Scale connection for retrieving docs using sftp and RSA key."""
-        if conn['online']:
+        if not conn['online']:
+            self.logger.info('Skipping creation of offline scale connection: %s', conn['host'])
+            return
+        if not conn['password']:
+            self.logger.warning('Skipping creation of scale connection: %s due to missing password', conn['host'])
+            return
+
+        try:
+            xport = paramiko.Transport(conn['host'])
+
+            local_conn = False
             try:
-                xport = paramiko.Transport(conn['host'])
+                proc = subprocess.Popen(['/usr/lpp/mmfs/bin/mmlscluster'], stdout=subprocess.PIPE)
+                stdout, _ = proc.communicate()
+                if conn['cluster'] in stdout.decode(ENCODING):
+                    local_conn = True
+            except Exception:
+                pass
 
-                local_conn = False
-                try:
-                    proc = subprocess.Popen(['/usr/lpp/mmfs/bin/mmlscluster'], stdout=subprocess.PIPE)
-                    stdout, _ = proc.communicate()
-                    if conn['cluster'] in stdout.decode(ENCODING):
-                        local_conn = True
-                except Exception:
-                    pass
+            if local_conn:
+                self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale Local', conn)
+                self.logger.info('Successfully created local scale connection for: %s', conn['name'])
+                return
 
-                if local_conn:
-                    self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale Local', conn)
-                    self.logger.info('Successfully created local scale connection for: %s', conn['name'])
-                    return
+            xport.connect(username=conn['user'], password=self.cipher.decrypt(conn['password']))
+            sftp = paramiko.SFTPClient.from_transport(xport)
+            if sftp:
+                self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale', sftp)
+                self.logger.info('Successfully created scale connection for: %s', conn['name'])
 
-                xport.connect(username=conn['user'], password=self.cipher.decrypt(conn['password']))
-                sftp = paramiko.SFTPClient.from_transport(xport)
-                if sftp:
-                    self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale', sftp)
-                    self.logger.info('Successfully created scale connection for: %s', conn['name'])
-
-            except (paramiko.ssh_exception.BadHostKeyException, paramiko.ssh_exception.AuthenticationException,
-                    paramiko.ssh_exception.SSHException, paramiko.ssh_exception.NoValidConnectionsError) as ex:
-                self.logger.warning('Error when attempting Scale connection: %s', str(ex))
+        except (paramiko.ssh_exception.BadHostKeyException, paramiko.ssh_exception.AuthenticationException,
+                paramiko.ssh_exception.SSHException, paramiko.ssh_exception.NoValidConnectionsError) as ex:
+            self.logger.warning('Error when attempting Scale connection: %s', str(ex))
 
     def connect_to_datasources(self):
         """Loop through datasources and create connections."""
