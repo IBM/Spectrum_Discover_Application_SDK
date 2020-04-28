@@ -1,15 +1,14 @@
 import base64
-import os
 
 from Crypto import Random
 from Crypto.Cipher import AES
 
 ENCODING = 'utf-8'
 
-class AesCipher(object):
-    def __init__(self):
+class AesCipher():
+    def __init__(self, key):
         self.block_size = 32
-        self.key = os.environ.get('CIPHER_KEY')
+        self.key = key
 
     def encrypt(self, raw):
         raw = self._pad(raw)

@@ -12,17 +12,20 @@ import os
 import sys
 import json
 import logging
+import subprocess
+from subprocess import check_call, CalledProcessError
+import tempfile
 from io import open
 from re import match
 from functools import partial
 from urllib.parse import urljoin
-from subprocess import check_call, CalledProcessError
-from confluent_kafka import Consumer, Producer, KafkaError
+from confluent_kafka import Consumer, Producer
 import requests
 import boto3
 import paramiko
 from .util.aes_cipher import AesCipher
 
+ENCODING = 'utf-8'
 
 class ApplicationBase():
     """Application SDK for registration and communication with Spectrum Discover.
@@ -45,6 +48,9 @@ class ApplicationBase():
 
     LOG_LEVEL .................. Log verbosity level (ERROR, WARNING, INFO, DEBUG)
                                  - default: INFO
+
+    MAX_POLL_INTERVAL .......... kafka config for max.poll.interval.ms
+                                 - default: 86400000
     """
 
     def __init__(self, reg_info):
@@ -68,8 +74,7 @@ class ApplicationBase():
 
         self.is_kube = os.environ.get('KUBERNETES_SERVICE_HOST') is not None
 
-        self.is_docker = os.environ.get('IS_DOCKER_CONTAINER', False)
-        self.cipher = AesCipher()
+        self.cipher = None
 
         # The user account assigned to this application
         self.application_token = None
@@ -80,11 +85,9 @@ class ApplicationBase():
             self.application_user = env('DB2WHREST_USER', '')
             self.application_user_password = env('DB2WHREST_PASSWORD', '')
 
-            self.sd_auth = env('AUTH_SERVICE_HOST', 'http://auth.spectrum-discover')
-
             self.sd_policy = self._create_host_from_env('POLICY_SERVICE_HOST', 'POLICY_SERVICE_PORT', 'POLICY_PROTOCOL')
             self.sd_connmgr = self._create_host_from_env('CONNMGR_SERVICE_HOST', 'CONNMGR_SERVICE_PORT', 'CONNMGR_PROTOCOL')
-
+            self.sd_auth = env('AUTH_SERVICE_HOST', 'http://auth.spectrum-discover')
         else:
             self.application_user = env('APPLICATION_USER', '')
             self.application_user_password = env('APPLICATION_USER_PASSWORD', '')
@@ -108,10 +111,12 @@ class ApplicationBase():
         policyengine_endpoint = partial(urljoin, self.sd_policy)
         connmgr_endpoint = partial(urljoin, self.sd_connmgr)
         auth_endpoint = partial(urljoin, self.sd_auth)
+        cipher_endpoint = partial(urljoin, self.sd_api)
         self.identity_auth_url = auth_endpoint('auth/v1/token')
         self.registration_url = policyengine_endpoint('policyengine/v1/applications')
         self.certificates_url = policyengine_endpoint('policyengine/v1/tlscert')
         self.connmgr_url = connmgr_endpoint('connmgr/v1/internal/connections')
+        self.cipher_url = cipher_endpoint('api/application/v1/cipherkey')
 
         # Certificates directory and file paths
         cert_dir = env('KAFKA_DIR', 'kafka')
@@ -355,10 +360,12 @@ class ApplicationBase():
         self.kafka_producer = Producer(p_conf)
 
         # Instantiate consumer
+        max_poll_interval = int(os.environ.get('MAX_POLL_INTERVAL', 86400000))
         c_conf = {
             'bootstrap.servers': '%s' % self.kafka_host,
             'group.id': 'myagent_grp',
             'session.timeout.ms': 6000,
+            'max.poll.interval.ms': max_poll_interval,
             'default.topic.config': {'auto.offset.reset': 'smallest'},
             'ssl.certificate.location': self.kafka_client_cert,
             'ssl.key.location': self.kafka_client_key,
@@ -395,74 +402,6 @@ class ApplicationBase():
             raise
         return
 
-    def start_kafka_listener(self):
-        """Start kafka consumer polling."""
-        self.logger.info("Looking for new work on the %s topic ...", self.work_q_name)
-
-        self.kafka_consumer.subscribe([self.work_q_name])
-
-        while True:
-            # Poll message from Kafka
-            json_request_msg = self.kafka_consumer.poll(timeout=10.0)
-
-            request_msg = self.decode_msg(json_request_msg)
-
-            if request_msg:
-                self.logger.debug("Job Request Message: %s", request_msg)
-
-                try:
-                    # Process the message with the implementation provided by the client
-                    response_msg = self.on_application_message(request_msg)
-                except Exception as exc:
-                    self.logger.error("Error processing Kafka message: %s", str(exc))
-                    continue
-
-                if response_msg:
-                    self.logger.debug(
-                        "Submitting completion status batch to topic %s", self.compl_q_name)
-
-                    try:
-                        json_response_msg = json.dumps(response_msg)
-                        self.kafka_producer.produce(self.compl_q_name, json_response_msg)
-                        self.kafka_producer.flush()
-                    except Exception:
-                        self.logger.error("Could not produce message to topic '%s'", self.compl_q_name)
-                        self.logger.error("--| Job Response Message: %s", json_response_msg)
-
-            if not self.application_enabled:
-                break
-
-    def decode_msg(self, msg):
-        """Decode JSON message and log errors."""
-        if msg:
-            if not msg.error():
-                return json.loads(msg.value().decode('utf-8'))
-
-            elif msg.error().code() != KafkaError._PARTITION_EOF:
-                self.logger.error(msg.error().code())
-
-    def on_application_message(self, message):
-        """Implement this method is all that is needed to implement custom application.
-
-        This methid will be called when Kafka consumer receives a message.
-        If value is returned from this method it will be delivered to Kafka producer.
-        """
-        if self.message_handler:
-            return self.message_handler(self, message)
-
-        self.logger.warning("Please implement `on_application_message` method or supply"
-                            " function to the `subscribe` method to process application messages.")
-
-    def subscribe(self, message_handler):
-        """Subscribe to Spectrum Discover messages.
-
-        Supplied function is called
-        when Kafka consumer receives a message. If value is returned from this function
-        it will be delivered to Kafka producer.
-        """
-        if message_handler:
-            self.message_handler = message_handler
-
     def get_connection_details(self):
         """Read the connection details from Spectrum Discover.
 
@@ -485,6 +424,16 @@ class ApplicationBase():
                 auth = None
 
             response = requests.get(url=self.connmgr_url, verify=False, headers=headers, auth=auth)
+
+            cipherkey = os.environ.get('CIPHER_KEY', None)
+            if cipherkey:
+                self.cipher = AesCipher(cipherkey)
+            else:
+                cipherkey_response = requests.get(url=self.cipher_url, verify=False, headers=headers, auth=auth)
+                if cipherkey_response.ok:
+                    self.cipher = AesCipher(cipherkey_response.json()['cipher_key'])
+                else:
+                    self.logger.warning("Cipher key was not available. This may affect cos and scale connections")
 
             self.logger.debug("Connection Manager response (%s)", response)
 
@@ -573,6 +522,7 @@ class ApplicationBase():
         )
 
         self.connections[(conn['datasource']), conn['cluster']] = ('COS', client)
+        self.logger.info('Successfully created cos connection for: %s', conn['name'])
 
     def mount_nfs(self, local_mount, host):
         """Mount the NFS file system."""
@@ -601,42 +551,110 @@ class ApplicationBase():
         conn['additional_info'] = additional_info
 
         self.connections[(conn['datasource']), conn['cluster']] = ('NFS', conn)
+        self.logger.info('Successfully created nfs connection for: %s', conn['name'])
 
     def create_scale_connection(self, conn):
         """Create a Scale connection for retrieving docs using sftp and RSA key."""
-        if conn['online']:
-            try:
-                xport = paramiko.Transport(conn['host'])
-                if (self.is_kube or self.is_docker) and os.path.exists('/keys/id_rsa'):
-                    pkey = paramiko.RSAKey.from_private_key_file('/keys/id_rsa')
-                elif os.path.exists('/gpfs/gpfs0/connections/scale/id_rsa'):  # Running on IBM Spectrum Discover
-                    pkey = paramiko.RSAKey.from_private_key_file('/gpfs/gpfs0/connections/scale/id_rsa')
-                else:  # Assume running locally on scale node
-                    self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale Local', conn)
-                    return
-                xport.connect(username=conn['user'], pkey=pkey)
-                sftp = paramiko.SFTPClient.from_transport(xport)
-                if sftp:
-                    self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale', sftp)
+        if not conn['online']:
+            self.logger.info('Skipping creation of offline scale connection: %s', conn['host'])
+            return
+        if not conn['password']:
+            self.logger.warning('Skipping creation of scale connection: %s due to missing password', conn['host'])
+            return
 
-            except (paramiko.ssh_exception.BadHostKeyException, paramiko.ssh_exception.AuthenticationException,
-                    paramiko.ssh_exception.SSHException, paramiko.ssh_exception.NoValidConnectionsError) as ex:
-                self.logger.warning('Error when attempting Scale connection: %s', str(ex))
+        try:
+            xport = paramiko.Transport(conn['host'])
+
+            local_conn = False
+            try:
+                proc = subprocess.Popen(['/usr/lpp/mmfs/bin/mmlscluster'], stdout=subprocess.PIPE)
+                stdout, _ = proc.communicate()
+                if conn['cluster'] in stdout.decode(ENCODING):
+                    local_conn = True
+            except Exception:
+                pass
+
+            if local_conn:
+                self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale Local', conn)
+                self.logger.info('Successfully created local scale connection for: %s', conn['name'])
+                return
+
+            xport.connect(username=conn['user'], password=self.cipher.decrypt(conn['password']))
+            sftp = paramiko.SFTPClient.from_transport(xport)
+            if sftp:
+                self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale', sftp)
+                self.logger.info('Successfully created scale connection for: %s', conn['name'])
+
+        except (paramiko.ssh_exception.BadHostKeyException, paramiko.ssh_exception.AuthenticationException,
+                paramiko.ssh_exception.SSHException, paramiko.ssh_exception.NoValidConnectionsError) as ex:
+            self.logger.warning('Error when attempting Scale connection: %s', str(ex))
+
+    def mount_smb(self, conn, local_mount):
+        """Mount the SMB file system."""
+        if not conn['host']:
+            self.logger.warning('Host not defined so cannot create SMB mount.')
+            return
+        if not conn['user']:
+            self.logger.warning('Could not retrieve SMB user.')
+            return
+        if not conn['password']:
+            self.logger.warning('Could not retrieve password for SMB mount.')
+            return
+        if not conn['mount_point']:
+            self.logger.warning('Could not retrieve smb export path.')
+            return
+        if not local_mount:
+            self.logger.warning('Host mount path could not be created.')
+            return
+
+        host = conn['host']
+        password = self.cipher.decrypt(conn['password'])
+        export_path = conn['mount_point']
+
+        if '\\' in conn['user']:
+            (domain, user) = conn['user'].split('\\')
+        elif '/' in conn['user']:
+            (domain, user) = conn['user'].split('/')
+        elif '@' in conn['user']:
+            (user, domain) = conn['user'].split('@')
+        else:
+            (domain, user) = ('', conn['user'])
+
+        cmd = f'mount -t cifs {export_path} {local_mount} -o user={user} -o password={password} -o ro'
+        if domain:
+            cmd += f' -o domain={domain}'
+
+        try:
+            check_call(cmd, shell=True)
+        except CalledProcessError:
+            # Not fatal, this might not be an active connection
+            self.logger.warning('Failed to mount SMB export %s', host)
+
+    def create_smb_connection(self, conn):
+        """Create a SMB connection for retrieving docs using a cifs mount."""
+        prefix = 'smb_'
+        suffix = '_' + conn['name'] + '_' + conn['datasource']
+        local_mount = tempfile.mkdtemp(suffix=suffix, prefix=prefix)
+
+        conn['additional_info'] = {}
+        conn['additional_info']['local_mount'] = local_mount
+
+        self.mount_smb(conn, local_mount)
+        self.connections[(conn['datasource']), conn['cluster']] = ('SMB/CIFS', conn)
+        self.logger.info('Successfully created smb connection for: %s', conn['name'])
 
     def connect_to_datasources(self):
         """Loop through datasources and create connections."""
         self.conn_details = self.get_connection_details()
         for conn in self.conn_details:
             if conn['platform'] == "IBM COS":
-                if self.is_kube and os.environ.get('CIPHER_KEY'):
-                    self.create_cos_connection(conn)
-                else:
-                    self.logger.warning("COS connections are only supported within kubernetes pods. "
-                                        "Skipping connection: %s", conn['datasource'])
+                self.create_cos_connection(conn)
             elif conn['platform'] == "NFS":
                 self.create_nfs_connection(conn)
             elif conn['platform'] == "Spectrum Scale":
                 self.create_scale_connection(conn)
+            elif conn['platform'] == "SMB/CIFS":
+                self.create_smb_connection(conn)
             else:
                 self.logger.warning("Unsupported connection platform %s", conn['platform'])
 
