@@ -158,6 +158,9 @@ class ApplicationBase():
         if not self.application_user:
             raise Exception("Authentication requires APPLICATION_USER and APPLICATION_USER_PASSWORD")
 
+        # can be set by apps when starting if they wish to overwrite existing registration info
+        self.update_registration = False
+
     @staticmethod
     def _create_host_from_env(host, port, protocol):
 
@@ -206,10 +209,24 @@ class ApplicationBase():
             raise_except_http([200, 201, 409], response.status_code)
 
             if response.status_code == 409:
-                self.logger.warning('Application already registered, initiating GET request (application:%s)', self.application_name)
+                if self.update_registration:
+                    self.logger.info('Application already registered, initiating PATCH update request (application:%s)', self.application_name)
+                    patch_register()
+                    # PATCH does not return any info, need to also GET below
+                else:
+                    self.logger.warning('Application already registered, initiating GET request (application:%s)', self.application_name)
                 return get_register()
 
             return response.json()
+
+        def patch_register():
+            response = requests.patch(url=self.registration_url + '/' + self.application_name,
+                                      verify=False, json=self.reg_info, headers=headers, auth=auth)
+
+            raise_except_http([200, 201, 204], response.status_code)
+
+            # A succesful PATCH returns no response
+            return
 
         def get_register():
             response = requests.get(url=self.registration_url, verify=False, headers=headers, auth=auth)
@@ -641,12 +658,15 @@ class ApplicationBase():
             else:
                 self.logger.warning("Unsupported connection platform %s", conn['platform'])
 
-    def start(self):
+    def start(self, update_registration=False):
         """Start Application."""
         self.logger.info("Starting Spectrum Discover application...")
 
         # Set application running status
         self.application_enabled = True
+
+        # If app is already registered, replace registration info with the new one when this flag is set
+        self.update_registration = update_registration
 
         # Register this application to Spectrum Discover
         self.register_application()
