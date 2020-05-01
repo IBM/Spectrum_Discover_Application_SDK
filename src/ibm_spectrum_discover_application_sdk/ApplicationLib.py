@@ -620,7 +620,7 @@ class ApplicationBase():
         else:
             (domain, user) = ('', conn['user'])
 
-        cmd = f'mount -t cifs \'{export_path}\' {local_mount} -o user={user} -o password={password} -o ro'
+        cmd = f'mount -t cifs \'{export_path}\' {local_mount} -o user=\'{user}\' -o password=\'{password}\' -o ro'
         if domain:
             cmd += f' -o domain={domain}'
 
