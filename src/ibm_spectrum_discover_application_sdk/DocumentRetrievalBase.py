@@ -16,6 +16,7 @@ import re
 
 ENCODING = 'utf-8'
 
+
 class DocumentRetrievalFactory:
     """Factory class to create the right sort of retrieval object."""
 
@@ -94,7 +95,10 @@ class DocumentRetrievalBase():
         """Return the tmpfile_path with filetype as string."""
         self.logger.debug('filepath prefix: %s, path: %s', prefix, path.decode(ENCODING))
         if '.' in path.decode(ENCODING):
-            return prefix + '.' + path.decode(ENCODING).split('.')[-1]
+            filename = prefix + '.' + path.decode(ENCODING).split('.')[-1]
+            # If we grabbed a /, we went too far
+            if '/' not in filename:
+                return filename
         return prefix
 
 
@@ -195,7 +199,7 @@ class DocumentRetrievalScale(DocumentRetrievalBase):
                 self.logger.error('Could not decode file %s', key.path.decode(ENCODING))
             except FileNotFoundError:
                 self.logger.error('Could not find file %s', key.path.decode(ENCODING))
-            except OSError: # Seen when scale nsd disk is down and file is not accessible
+            except OSError:  # Seen when scale nsd disk is down and file is not accessible
                 self.logger.error('Could not transfer file %s', key.path.decode(ENCODING))
 
         else:
