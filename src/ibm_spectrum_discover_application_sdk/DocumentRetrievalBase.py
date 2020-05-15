@@ -91,14 +91,11 @@ class DocumentRetrievalBase():
         """
         self.logger.warning("cleanup_document has not been implemented for this class")
 
-    def create_file_path(self, prefix, path):
+    def create_file_path(self, prefix, filetype):
         """Return the tmpfile_path with filetype as string."""
-        self.logger.debug('filepath prefix: %s, path: %s', prefix, path.decode(ENCODING))
-        if '.' in path.decode(ENCODING):
-            filename = prefix + '.' + path.decode(ENCODING).split('.')[-1]
-            # If we grabbed a /, we went too far
-            if '/' not in filename:
-                return filename
+        self.logger.debug('filepath prefix: %s, type: %s', prefix, filetype)
+        if filetype:
+            return prefix + "." + filetype
         return prefix
 
 
@@ -118,7 +115,7 @@ class DocumentRetrievalCOS(DocumentRetrievalBase):
         if self.client:
             obj = self.client.get_object(Bucket=key.datasource, Key=key.path.decode(ENCODING).split('/', 1)[1])
             content = obj['Body'].read()
-            self.filepath = self.create_file_path('/tmp/cosfile_' + str(os.getpid()), key.path)
+            self.filepath = self.create_file_path('/tmp/cosfile_' + str(os.getpid()), key.filetype)
             with open(self.filepath, 'w', encoding=ENCODING) as file:
                 file.write(content.decode(ENCODING, 'replace'))
         else:
@@ -192,7 +189,7 @@ class DocumentRetrievalScale(DocumentRetrievalBase):
 
         if self.client:
             try:
-                self.filepath = self.create_file_path('/tmp/scalefile_' + str(os.getpid()), key.path)
+                self.filepath = self.create_file_path('/tmp/scalefile_' + str(os.getpid()), key.filetype)
                 self.logger.debug(self.filepath)
                 self.client.get(key.path, self.filepath)
             except UnicodeDecodeError:
@@ -268,6 +265,7 @@ class DocumentKey(object):
         self.datasource = doc['datasource']
         self.cluster = doc['cluster']
         self.path = doc['path'].encode(ENCODING)
+        self.filetype = doc['type']
         # a unique identifier for the connection this document belongs to.
         self.id = self.datasource + ':' + self.cluster
 
