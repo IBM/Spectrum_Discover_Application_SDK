@@ -51,6 +51,9 @@ class ApplicationBase():
 
     MAX_POLL_INTERVAL .......... kafka config for max.poll.interval.ms
                                  - default: 86400000
+
+    SSH_KEY_LOCATION ........... Full path to the private ssh key - id_rsa file
+                                 - default: None
     """
 
     def __init__(self, reg_info):
@@ -73,6 +76,7 @@ class ApplicationBase():
         self.application_name = env('APPLICATION_NAME', 'sd_sample_application')
 
         self.is_kube = os.environ.get('KUBERNETES_SERVICE_HOST') is not None
+        self.is_docker = os.environ.get('IS_DOCKER_CONTAINER', False)
 
         self.cipher = None
 
@@ -140,6 +144,13 @@ class ApplicationBase():
         self.kafka_producer = None
         self.kafka_consumer = None
 
+        # ssh key location
+        if self.is_kube or self.is_docker:
+            self.ssh_key = '/keys/id_rsa'
+        else:
+            # Grab user defined value. If not specififed, assume running on discover node.
+            self.ssh_key = os.environ.get('SSH_KEY_LOCATION', '/gpfs/gpfs0/connections/scale/id_rsa')
+
         # Application running status
         self.application_enabled = False
 
@@ -154,9 +165,6 @@ class ApplicationBase():
         self.logger.info("Application name: %s", self.application_name)
         self.logger.info("Application user: %s", self.application_user)
         self.logger.info("Certificates directory: %s", self.certificates_dir)
-
-        if not self.application_user:
-            raise Exception("Authentication requires APPLICATION_USER and APPLICATION_USER_PASSWORD")
 
         # can be set by apps when starting if they wish to overwrite existing registration info
         self.update_registration = False
@@ -558,9 +566,6 @@ class ApplicationBase():
         if not conn['online']:
             self.logger.info('Skipping creation of offline scale connection: %s', conn['host'])
             return
-        if not conn['password']:
-            self.logger.warning('Skipping creation of scale connection: %s due to missing password', conn['host'])
-            return
 
         try:
             xport = paramiko.Transport(conn['host'])
@@ -579,7 +584,14 @@ class ApplicationBase():
                 self.logger.info('Successfully created local scale connection for: %s', conn['name'])
                 return
 
-            xport.connect(username=conn['user'], password=self.cipher.decrypt(conn['password']))
+            if os.path.exists(self.ssh_key):
+                pkey = paramiko.RSAKey.from_private_key_file(self.ssh_key)
+            else:
+                self.logger.error('Could not find ssh key file for connection: %s. '
+                                  'You may need to define the \'SSH_KEY_LOCATION\' environment variable.', conn['name'])
+                return
+
+            xport.connect(username=conn['user'], pkey=pkey)
             sftp = paramiko.SFTPClient.from_transport(xport)
             if sftp:
                 self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale', sftp)
