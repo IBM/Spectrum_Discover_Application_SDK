@@ -603,34 +603,22 @@ class ApplicationBase():
 
     def mount_smb(self, conn, local_mount):
         """Mount the SMB file system."""
-        if not conn['host']:
-            self.logger.warning('Host not defined so cannot create SMB mount.')
-            return
-        if not conn['user']:
-            self.logger.warning('Could not retrieve SMB user.')
-            return
-        if not conn['password']:
-            self.logger.warning('Could not retrieve password for SMB mount.')
-            return
-        if not conn['mount_point']:
-            self.logger.warning('Could not retrieve smb export path.')
-            return
-        if not local_mount:
-            self.logger.warning('Host mount path could not be created.')
-            return
+        try:
+            host = conn['host']
+            password = self.cipher.decrypt(conn['password'])
+            export_path = conn['mount_point']
 
-        host = conn['host']
-        password = self.cipher.decrypt(conn['password'])
-        export_path = conn['mount_point']
-
-        if '\\' in conn['user']:
-            (domain, user) = conn['user'].split('\\')
-        elif '/' in conn['user']:
-            (domain, user) = conn['user'].split('/')
-        elif '@' in conn['user']:
-            (user, domain) = conn['user'].split('@')
-        else:
-            (domain, user) = ('', conn['user'])
+            if '\\' in conn['user']:
+                (domain, user) = conn['user'].split('\\')
+            elif '/' in conn['user']:
+                (domain, user) = conn['user'].split('/')
+            elif '@' in conn['user']:
+                (user, domain) = conn['user'].split('@')
+            else:
+                (domain, user) = ('', conn['user'])
+        except KeyError as ke:
+            self.logger.error('Skipping creation of SMB connection: %s. %s is not defined.', conn['name'], str(ke))
+            return False
 
         cmd = f'mount -t cifs \'{export_path}\' {local_mount} -o user=\'{user}\' -o password=\'{password}\' -o ro'
         if domain:
