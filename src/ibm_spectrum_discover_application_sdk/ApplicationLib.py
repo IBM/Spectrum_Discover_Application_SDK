@@ -2,7 +2,7 @@
 # Licensed Materials - Property of IBM
 # 5737-I32
 #
-# (C) Copyright IBM Corp. 2019
+# (C) Copyright IBM Corp. 2019, 2020
 #
 # US Government Users Restricted Rights - Use, duplication, or
 # disclosure restricted by GSA ADP Schedule Contract with IBM Corp.
@@ -626,9 +626,14 @@ class ApplicationBase():
 
         try:
             check_call(cmd, shell=True)
-        except CalledProcessError:
-            # Not fatal, this might not be an active connection
-            self.logger.warning('Failed to mount SMB export %s', host)
+            return True
+        except CalledProcessError as cpe:
+            # Failed unless rc=32 which means already mounted
+            if cpe.returncode == 32 and 'Device or resource busy' in str(cpe):
+                self.logger.info("SMB connection %s already mounted.", conn['name'])
+                return True
+            self.logger.warning('Failed to mount SMB export %s for connection %s', export_path, conn['name'])
+            return False
 
     def create_smb_connection(self, conn):
         """Create a SMB connection for retrieving docs using a cifs mount."""
@@ -639,7 +644,10 @@ class ApplicationBase():
         conn['additional_info'] = {}
         conn['additional_info']['local_mount'] = local_mount
 
-        self.mount_smb(conn, local_mount)
+        mounted = self.mount_smb(conn, local_mount)
+        if not mounted:
+            return
+
         self.connections[(conn['datasource']), conn['cluster']] = ('SMB/CIFS', conn)
         self.logger.info('Successfully created smb connection for: %s', conn['name'])
 
