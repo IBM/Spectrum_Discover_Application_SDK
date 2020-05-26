@@ -27,6 +27,9 @@ from .util.aes_cipher import AesCipher
 
 ENCODING = 'utf-8'
 
+MAX_POLL_INTERVAL = 86400000
+SESSION_TIMEOUT_MS = 60000
+
 class ApplicationBase():
     """Application SDK for registration and communication with Spectrum Discover.
 
@@ -368,11 +371,12 @@ class ApplicationBase():
         self.kafka_producer = Producer(p_conf)
 
         # Instantiate consumer
-        max_poll_interval = int(os.environ.get('MAX_POLL_INTERVAL', 86400000))
+        max_poll_interval = int(os.environ.get('MAX_POLL_INTERVAL', MAX_POLL_INTERVAL))
+        session_timeout_ms = int(os.environ.get('SESSION_TIMEOUT_MS', SESSION_TIMEOUT_MS))
         c_conf = {
             'bootstrap.servers': '%s' % self.kafka_host,
             'group.id': 'myagent_grp',
-            'session.timeout.ms': 6000,
+            'session.timeout.ms': session_timeout_ms,
             'max.poll.interval.ms': max_poll_interval,
             'default.topic.config': {'auto.offset.reset': 'smallest'},
             'ssl.certificate.location': self.kafka_client_cert,
