@@ -15,7 +15,7 @@ import logging
 import subprocess
 from subprocess import check_call, CalledProcessError
 import tempfile
-from io import open
+from io import open, StringIO
 from re import match
 from functools import partial
 from urllib.parse import urljoin
@@ -29,6 +29,8 @@ ENCODING = 'utf-8'
 
 MAX_POLL_INTERVAL = 86400000
 SESSION_TIMEOUT_MS = 60000
+
+DEFAULT_SSH_KEY_LOCATION = '/gpfs/gpfs0/connections/scale/id_rsa'
 
 class ApplicationBase():
     """Application SDK for registration and communication with Spectrum Discover.
@@ -81,6 +83,7 @@ class ApplicationBase():
         self.is_kube = os.environ.get('KUBERNETES_SERVICE_HOST') is not None
         self.is_docker = os.environ.get('IS_DOCKER_CONTAINER', False)
 
+        self.cipherkey = None
         self.cipher = None
 
         # The user account assigned to this application
@@ -146,13 +149,6 @@ class ApplicationBase():
         self.kafka_port = None
         self.kafka_producer = None
         self.kafka_consumer = None
-
-        # ssh key location
-        if self.is_kube or self.is_docker:
-            self.ssh_key = '/keys/id_rsa'
-        else:
-            # Grab user defined value. If not specififed, assume running on discover node.
-            self.ssh_key = os.environ.get('SSH_KEY_LOCATION', '/gpfs/gpfs0/connections/scale/id_rsa')
 
         # Application running status
         self.application_enabled = False
@@ -437,13 +433,14 @@ class ApplicationBase():
 
             response = requests.get(url=self.connmgr_url, verify=False, headers=headers, auth=auth)
 
-            cipherkey = os.environ.get('CIPHER_KEY', None)
-            if cipherkey:
-                self.cipher = AesCipher(cipherkey)
+            self.cipherkey = os.environ.get('CIPHER_KEY', None)
+            if self.cipherkey:
+                self.cipher = AesCipher(self.cipherkey)
             else:
                 cipherkey_response = requests.get(url=self.cipher_url, verify=False, headers=headers, auth=auth)
                 if cipherkey_response.ok:
-                    self.cipher = AesCipher(cipherkey_response.json()['cipher_key'])
+                    self.cipherkey = cipherkey_response.json()['cipher_key']
+                    self.cipher = AesCipher(self.cipherkey)
                 else:
                     self.logger.warning("Cipher key was not available. This may affect cos and scale connections")
 
@@ -572,8 +569,6 @@ class ApplicationBase():
             return
 
         try:
-            xport = paramiko.Transport(conn['host'])
-
             local_conn = False
             try:
                 proc = subprocess.Popen(['/usr/lpp/mmfs/bin/mmlscluster'], stdout=subprocess.PIPE)
@@ -588,14 +583,27 @@ class ApplicationBase():
                 self.logger.info('Successfully created local scale connection for: %s', conn['name'])
                 return
 
-            if os.path.exists(self.ssh_key):
-                pkey = paramiko.RSAKey.from_private_key_file(self.ssh_key)
-            else:
-                self.logger.error('Could not find ssh key file for connection: %s. '
-                                  'You may need to define the \'SSH_KEY_LOCATION\' environment variable.', conn['name'])
-                return
+            xport = paramiko.Transport(conn['host'])
 
-            xport.connect(username=conn['user'], pkey=pkey)
+            additional_info = json.loads(conn['additional_info'])
+
+            if 'auth_type' in additional_info:  # 2.0.3.1+
+                if additional_info['auth_type'] == 'password':
+                    xport.connect(username=conn['user'], password=self.cipher.decrypt(conn['password']))
+                else:
+                    pkey = paramiko.RSAKey.from_private_key(StringIO(additional_info['privkey']), self.cipherkey)
+                    xport.connect(username=conn['user'], pkey=pkey)
+            else:  # <= 2.0.3
+                ssh_key = '/keys/id_rsa' if self.is_kube or self.is_docker else os.environ.get('SSH_KEY_LOCATION', DEFAULT_SSH_KEY_LOCATION)
+
+                if os.path.exists(ssh_key):
+                    pkey = paramiko.RSAKey.from_private_key_file(ssh_key)
+                    xport.connect(username=conn['user'], pkey=pkey)
+                else:
+                    self.logger.error('Could not find ssh key file for connection: %s. '
+                                      'You may need to define the \'SSH_KEY_LOCATION\' environment variable.', conn['name'])
+                    return
+
             sftp = paramiko.SFTPClient.from_transport(xport)
             if sftp:
                 self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale', sftp)
