@@ -627,7 +627,6 @@ class ApplicationBase():
     def mount_smb(self, conn, local_mount):
         """Mount the SMB file system."""
         try:
-            host = conn['host']
             password = self.cipher.decrypt(conn['password'])
             export_path = conn['mount_point']
             mount_access = 'rw' if self.preserve_stat_time else 'ro'
