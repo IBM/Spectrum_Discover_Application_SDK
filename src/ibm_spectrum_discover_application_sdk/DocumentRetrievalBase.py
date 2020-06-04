@@ -8,11 +8,13 @@
 # US Government Users Restricted Rights - Use, duplication, or
 # disclosure restricted by GSA ADP Schedule Contract with IBM Corp.
 ########################################################## {COPYRIGHT-END} ###
+"""Base class for document retrieval for various connections."""
 
 import logging
 import os
 import sys
 import re
+from subprocess import check_call, CalledProcessError
 
 ENCODING = 'utf-8'
 
@@ -21,21 +23,36 @@ class DocumentRetrievalFactory:
     """Factory class to create the right sort of retrieval object."""
 
     @staticmethod
+    def _get_matching_connection(datasource, cluster, connections):
+        """Get connection matching datasource and cluster."""
+        for conn in connections:
+            if conn['datasource'] == datasource and conn['cluster'] == cluster:
+                return conn
+        return None
+
+    @staticmethod
     def create(application, key):
         """Lookup connection and create required type."""
-        platform, client, connection = application.connections.get((key.datasource, key.cluster), (None, None, None))
-
-        if platform and (client or connection):
+        connection = DocumentRetrievalFactory._get_matching_connection(key.datasource, key.cluster, application.conn_details)
+        try:
+            platform = connection['platform']
             if platform == 'COS':
+                _, client, connection = application.create_cos_connection(connection)
                 return DocumentRetrievalCOS(client, connection)
             elif platform == 'NFS':
+                _, client, connection = application.create_nfs_connection(connection)
                 return DocumentRetrievalNFS(client, connection)
             elif platform == 'Spectrum Scale':
+                platform, client, connection = application.create_scale_connection(connection)
+                if platform == 'Spectrum Scale Local':
+                    return DocumentRetrievalLocalScale(client, connection)
                 return DocumentRetrievalScale(client, connection)
-            elif platform == 'Spectrum Scale Local':
-                return DocumentRetrievalLocalScale(client, connection)
             elif platform == 'SMB/CIFS':
+                _, client, connection = application.create_smb_connection(connection, key.fileset)
                 return DocumentRetrievalSMB(client, connection)
+        except KeyError:
+            # No connection found
+            pass
         return None
 
 
@@ -76,7 +93,6 @@ class DocumentRetrievalBase():
         Returns None if object was not able to be retrieved.
         """
         self.logger.warning("get_document has not been implemented for this class")
-        return None
 
     def get_headers(self, key):
         """
@@ -88,7 +104,6 @@ class DocumentRetrievalBase():
         Returns None if object was not able to be retrieved.
         """
         self.logger.warning("get_headers has not been implemented for this class")
-        return None
 
     def cleanup_document(self):
         """
@@ -99,6 +114,15 @@ class DocumentRetrievalBase():
         Returns None.
         """
         self.logger.warning("cleanup_document has not been implemented for this class")
+
+    def close_connection(self):
+        """
+        To be implemented by the child class if needed.
+
+        Closes an open connection.
+
+        Returns None.
+        """
 
     def create_file_path(self, prefix, filetype):
         """Return the tmpfile_path with filetype as string."""
@@ -124,7 +148,8 @@ class DocumentRetrievalBase():
                 self.stat_atime = stat.st_atime
                 self.stat_mtime = stat.st_mtime
 
-            self.logger.debug('Successfully retrieved stat info for %s. atime: %s, mtime: %s', filepath, str(self.stat_atime), str(self.stat_mtime))
+            self.logger.debug('Successfully retrieved stat info for %s. atime: %s, mtime: %s', filepath, str(self.stat_atime),
+                              str(self.stat_mtime))
         except (PermissionError, FileNotFoundError) as error:
             self.logger.error('Failed to retrieve stat info for %s. Error: %s', filepath, str(error))
             self.stat_atime = None
@@ -140,7 +165,8 @@ class DocumentRetrievalBase():
                 else:
                     method.utime(filepath, (self.stat_atime, self.stat_mtime))
 
-                self.logger.debug('Successfully restored stat info for %s. atime: %s, mtime: %s', filepath, str(self.stat_atime), str(self.stat_mtime))
+                self.logger.debug('Successfully restored stat info for %s. atime: %s, mtime: %s', filepath, str(self.stat_atime),
+                                  str(self.stat_mtime))
             except (PermissionError, FileNotFoundError, OSError) as error:
                 self.logger.error('Failed to restore stat info for %s. Error: %s', filepath, str(error))
 
@@ -225,6 +251,16 @@ class DocumentRetrievalNFS(DocumentRetrievalBase):
 
         self.logger.debug("NFS: Not doing any cleanup.")
 
+    def close_connection(self):
+        """Unmounts an nfs connection."""
+        mount_point = self.connection['additional_info']['local_mount']
+        cmd = f'umount {mount_point}'
+        try:
+            check_call(cmd, shell=True)
+        except CalledProcessError as cpe:
+            self.logger.warning('Failed to to unmount NFS export %s for connection %s. Error: %s', mount_point,
+                                self.connection['name'], str(cpe))
+
 
 class DocumentRetrievalScale(DocumentRetrievalBase):
     """Create a Spectrum Scale document class.
@@ -233,6 +269,7 @@ class DocumentRetrievalScale(DocumentRetrievalBase):
     """
 
     filepath = None
+    key = None
 
     def get_document(self, key):
         """Return document filepath."""
@@ -240,19 +277,18 @@ class DocumentRetrievalScale(DocumentRetrievalBase):
         self.key = key
 
         if self.preserve_stat_time:
-            self.save_stat_times(key.path.decode(ENCODING), method=self.client, nanoseconds=False)
+            self.save_stat_times(self.key.path.decode(ENCODING), method=self.client, nanoseconds=False)
 
         if self.client:
             try:
-                self.filepath = self.create_file_path('/tmp/scalefile_' + str(os.getpid()), key.filetype)
-                self.logger.debug(self.filepath)
-                self.client.get(key.path, self.filepath)
+                self.filepath = self.create_file_path('/tmp/scalefile_' + str(os.getpid()), self.key.filetype)
+                self.client.get(self.key.path, self.filepath)
             except UnicodeDecodeError:
-                self.logger.error('Could not decode file %s', key.path.decode(ENCODING))
+                self.logger.error('Could not decode file %s', self.key.path.decode(ENCODING))
             except FileNotFoundError:
-                self.logger.error('Could not find file %s', key.path.decode(ENCODING))
+                self.logger.error('Could not find file %s', self.key.path.decode(ENCODING))
             except OSError:  # Seen when scale nsd disk is down and file is not accessible
-                self.logger.error('Could not transfer file %s', key.path.decode(ENCODING))
+                self.logger.error('Could not transfer file %s', self.key.path.decode(ENCODING))
 
         else:
             self.logger.info('No document match')
@@ -270,6 +306,10 @@ class DocumentRetrievalScale(DocumentRetrievalBase):
             os.remove(self.filepath)
         except FileNotFoundError:
             self.logger.debug('No file: %s to delete.', self.filepath)
+
+    def close_connection(self):
+        """Close an active sftp connection."""
+        self.client.close()
 
 
 class DocumentRetrievalLocalScale(DocumentRetrievalBase):
@@ -329,6 +369,16 @@ class DocumentRetrievalSMB(DocumentRetrievalBase):
 
         self.logger.debug("SMB: Not doing any cleanup.")
 
+    def close_connection(self):
+        """Unmounts a smb connection."""
+        mount_point = self.connection['additional_info']['local_mount']
+        cmd = f'umount {mount_point}'
+        try:
+            check_call(cmd, shell=True)
+        except CalledProcessError as cpe:
+            self.logger.warning('Failed to to unmount SMB export %s for connection %s. Error: %s', mount_point,
+                                self.connection['name'], str(cpe))
+
 
 class DocumentKey(object):
     """A class to identify a unique document on a Spectrum Discover Connection."""
@@ -341,6 +391,8 @@ class DocumentKey(object):
         self.path = doc['path'].encode(ENCODING)
         if 'type' in doc.keys():  # deepinspect
             self.filetype = doc['type']
+        if 'fileset' in doc.keys(): # 2.0.3+
+            self.fileset = doc['fileset']
         # a unique identifier for the connection this document belongs to.
         self.id = self.datasource + ':' + self.cluster
 

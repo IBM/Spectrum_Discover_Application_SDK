@@ -37,6 +37,7 @@ class ApplicationMessageBase():
         self.kafka_consumer.subscribe([application.work_q_name])
         self.kafka_producer = application.kafka_producer
         self.compl_q_name = application.compl_q_name
+        self.application = application
 
         # Instantiate logger
         loglevels = {'INFO': logging.INFO, 'DEBUG': logging.DEBUG,
@@ -75,16 +76,26 @@ class ApplicationMessageBase():
                 self.logger.error(msg.error().code())
 
     def read_message(self, timeout=10):
-        """Read JSON message and log errors."""
+        """
+        Read JSON message and log errors.
+
+        Before returning a message, make sure the run_id is not part of the ignored list from stopped policies.
+        """
+        msg = None
         msg_string = self.kafka_consumer.poll(timeout=timeout)
         if msg_string:
             try:
                 msg = self.decode_msg(msg_string)
             except json.decoder.JSONDecodeError:
                 self.logger.error("Message decode error - invalid JSON")
+
+        # Override the message and drop it in the case that we have an ignored run_id
+        try:
+            if msg['run_id'] in self.application.kafka_ignored_run_ids:
+                self.logger.debug("Dropping message due to ignored run_id %s", msg['run_id'])
                 msg = None
-        else:
-            msg = None
+        except (TypeError, KeyError):
+            pass
 
         return msg
 
@@ -94,7 +105,6 @@ class ApplicationMessageBase():
         self.kafka_producer.flush()
 
         self.kafka_consumer.commit()
-        return
 
 
 class ApplicationReplyMessage():

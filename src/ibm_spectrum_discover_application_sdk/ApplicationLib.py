@@ -13,6 +13,9 @@ import sys
 import json
 import logging
 import subprocess
+import time
+from uuid import uuid4
+from threading import Thread
 from subprocess import check_call, CalledProcessError
 import tempfile
 from io import open, StringIO
@@ -31,6 +34,9 @@ MAX_POLL_INTERVAL = 86400000
 SESSION_TIMEOUT_MS = 60000
 
 DEFAULT_SSH_KEY_LOCATION = '/gpfs/gpfs0/connections/scale/id_rsa'
+
+SUPPORTED_POLICY_CONTROL_IDS = ['STOP']
+
 
 class ApplicationBase():
     """Application SDK for registration and communication with Spectrum Discover.
@@ -153,6 +159,10 @@ class ApplicationBase():
         self.kafka_port = None
         self.kafka_producer = None
         self.kafka_consumer = None
+        self.kafka_policyengine_consumer = None
+        self.kafka_connmgr_consumer = None
+        self.kafka_policyengine_ready = False
+        self.kafka_ignored_run_ids = set()
 
         # Application running status
         self.application_enabled = False
@@ -162,7 +172,8 @@ class ApplicationBase():
 
         # a mapping dict of connection to client
         self.connections = {}
-        self.conn_details = None
+        self.conn_details = []
+        self.kafka_connections_to_update = set()
 
         self.logger.info("Initialize to host: %s", self.sd_api)
         self.logger.info("Application name: %s", self.application_name)
@@ -362,32 +373,36 @@ class ApplicationBase():
 
         raise Exception(err)
 
-    def configure_kafka(self):
-        """Instantiate producer and consumer."""
-        # Instantiate producer
-        p_conf = {
-            'bootstrap.servers': '%s' % self.kafka_host,
-            'ssl.certificate.location': self.kafka_client_cert,
-            'ssl.key.location': self.kafka_client_key,
-            'security.protocol': 'ssl', 'ssl.ca.location': self.kafka_root_cert}
-
-        self.kafka_producer = Producer(p_conf)
-
-        # Instantiate consumer
+    def create_kafka_consumer(self, auto_offset_reset='smallest', group_id='myagent_grp'):
+        """Instantiate consumer."""
         max_poll_interval = int(os.environ.get('MAX_POLL_INTERVAL', MAX_POLL_INTERVAL))
         session_timeout_ms = int(os.environ.get('SESSION_TIMEOUT_MS', SESSION_TIMEOUT_MS))
         c_conf = {
             'bootstrap.servers': '%s' % self.kafka_host,
-            'group.id': 'myagent_grp',
+            'group.id': group_id,
             'session.timeout.ms': session_timeout_ms,
             'max.poll.interval.ms': max_poll_interval,
-            'default.topic.config': {'auto.offset.reset': 'smallest'},
+            'default.topic.config': {'auto.offset.reset': auto_offset_reset},
             'ssl.certificate.location': self.kafka_client_cert,
             'ssl.key.location': self.kafka_client_key,
+            'ssl.ca.location': self.kafka_root_cert,
             'enable.auto.commit': 'false',
-            'security.protocol': 'ssl', 'ssl.ca.location': self.kafka_root_cert}
+            'security.protocol': 'ssl'
+        }
 
-        self.kafka_consumer = Consumer(c_conf)
+        return Consumer(c_conf)
+
+    def create_kafka_producer(self):
+        """Instantiate producer."""
+        p_conf = {
+            'bootstrap.servers': '%s' % self.kafka_host,
+            'ssl.certificate.location': self.kafka_client_cert,
+            'ssl.key.location': self.kafka_client_key,
+            'ssl.ca.location': self.kafka_root_cert,
+            'security.protocol': 'ssl'
+        }
+
+        return Producer(p_conf)
 
     def obtain_token(self):
         """Retrieve role based token for authentication.
@@ -424,6 +439,7 @@ class ApplicationBase():
         nfs mounts.
         """
         self.logger.debug("Querying information for connections")
+        self.obtain_token()
         try:
 
             headers = {}
@@ -439,6 +455,7 @@ class ApplicationBase():
                 auth = None
 
             response = requests.get(url=self.connmgr_url, verify=False, headers=headers, auth=auth)
+            self.logger.debug("Connection Manager response (%s)", response)
 
             self.cipherkey = os.environ.get('CIPHER_KEY', None)
             if self.cipherkey:
@@ -450,8 +467,6 @@ class ApplicationBase():
                     self.cipher = AesCipher(self.cipherkey)
                 else:
                     self.logger.warning("Cipher key was not available. This may affect cos and scale connections")
-
-            self.logger.debug("Connection Manager response (%s)", response)
 
             # return certificate data
             if response.ok:
@@ -511,7 +526,9 @@ class ApplicationBase():
 
     def create_cos_connection(self, conn):
         """Create a COS connection for retrieving docs."""
-        additional_info = json.loads(conn['additional_info'])
+        additional_info = conn['additional_info']
+        if isinstance(additional_info, str):
+            additional_info = json.loads(additional_info)
         aws_access_key_id = additional_info.get('accesser_access_key', None)
         aws_secret_access_key = additional_info.get('accesser_secret_key', None)
 
@@ -539,6 +556,7 @@ class ApplicationBase():
 
         self.connections[(conn['datasource']), conn['cluster']] = ('COS', client, conn)
         self.logger.info('Successfully created cos connection for: %s', conn['name'])
+        return self.connections[(conn['datasource']), conn['cluster']]
 
     def mount_nfs(self, local_mount, host):
         """Mount the NFS file system."""
@@ -558,7 +576,9 @@ class ApplicationBase():
 
     def create_nfs_connection(self, conn):
         """Create a NFS connection for retrieving docs using mount point."""
-        additional_info = json.loads(conn['additional_info'])
+        additional_info = conn['additional_info']
+        if isinstance(additional_info, str):
+            additional_info = json.loads(additional_info)
 
         remote_nfs_mount = conn['host'] + ':' + conn['mount_point']
         mount_path_prefix = additional_info['local_mount']
@@ -570,6 +590,7 @@ class ApplicationBase():
 
         self.connections[(conn['datasource']), conn['cluster']] = ('NFS', None, conn)
         self.logger.info('Successfully created nfs connection for: %s', conn['name'])
+        return self.connections[(conn['datasource']), conn['cluster']]
 
     def create_scale_connection(self, conn):
         """Create a Scale connection for retrieving docs using sftp and RSA key."""
@@ -587,14 +608,16 @@ class ApplicationBase():
             except Exception:
                 pass
 
-            additional_info = json.loads(conn['additional_info'])
+            additional_info = conn['additional_info']
+            if isinstance(additional_info, str):
+                additional_info = json.loads(additional_info)
             conn['additional_info'] = additional_info
             conn['additional_info']['preserve_stat_time'] = True if self.preserve_stat_time else False
 
             if local_conn:
                 self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale Local', None, conn)
                 self.logger.info('Successfully created local scale connection for: %s', conn['name'])
-                return
+                return self.connections[(conn['datasource']), conn['cluster']]
 
             xport = paramiko.Transport(conn['host'])
 
@@ -619,17 +642,23 @@ class ApplicationBase():
             if sftp:
                 self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale', sftp, conn)
                 self.logger.info('Successfully created scale connection for: %s', conn['name'])
+                return self.connections[(conn['datasource']), conn['cluster']]
 
         except (paramiko.ssh_exception.BadHostKeyException, paramiko.ssh_exception.AuthenticationException,
                 paramiko.ssh_exception.SSHException, paramiko.ssh_exception.NoValidConnectionsError) as ex:
             self.logger.warning('Error when attempting Scale connection: %s', str(ex))
 
-    def mount_smb(self, conn, local_mount):
+    def mount_smb(self, conn, local_mount, fileset):
         """Mount the SMB file system."""
         try:
             password = self.cipher.decrypt(conn['password'])
             export_path = conn['mount_point']
             mount_access = 'rw' if self.preserve_stat_time else 'ro'
+
+            if not export_path.endswith(fileset):
+                seperator_char = export_path[0]
+                export_path = f'{export_path}{seperator_char}{fileset}'
+            self.logger.debug('export_path = %s', export_path)
 
             if '\\' in conn['user']:
                 (domain, user) = conn['user'].split('\\')
@@ -658,7 +687,7 @@ class ApplicationBase():
             self.logger.warning('Failed to mount SMB export %s for connection %s', export_path, conn['name'])
             return False
 
-    def create_smb_connection(self, conn):
+    def create_smb_connection(self, conn, fileset):
         """Create a SMB connection for retrieving docs using a cifs mount."""
         prefix = 'smb_'
         suffix = '_' + conn['name'] + '_' + conn['datasource']
@@ -668,27 +697,13 @@ class ApplicationBase():
         conn['additional_info']['local_mount'] = local_mount
         conn['additional_info']['preserve_stat_time'] = True if self.preserve_stat_time else False
 
-        mounted = self.mount_smb(conn, local_mount)
+        mounted = self.mount_smb(conn, local_mount, fileset)
         if not mounted:
             return
 
         self.connections[(conn['datasource']), conn['cluster']] = ('SMB/CIFS', None, conn)
         self.logger.info('Successfully created smb connection for: %s', conn['name'])
-
-    def connect_to_datasources(self):
-        """Loop through datasources and create connections."""
-        self.conn_details = self.get_connection_details()
-        for conn in self.conn_details:
-            if conn['platform'] == "IBM COS":
-                self.create_cos_connection(conn)
-            elif conn['platform'] == "NFS":
-                self.create_nfs_connection(conn)
-            elif conn['platform'] == "Spectrum Scale":
-                self.create_scale_connection(conn)
-            elif conn['platform'] == "SMB/CIFS":
-                self.create_smb_connection(conn)
-            else:
-                self.logger.warning("Unsupported connection platform %s", conn['platform'])
+        return self.connections[(conn['datasource']), conn['cluster']]
 
     def start(self, update_registration=False):
         """Start Application."""
@@ -706,14 +721,88 @@ class ApplicationBase():
         # Get Kafka certificates from Spectrum Discover
         self.get_kafka_certificates()
 
-        # Get connections for data retrieval
-        self.connect_to_datasources()
+        # Get initial connection information
+        self.conn_details = self.get_connection_details()
 
-        # Instantiate Kafka producer and consumer
-        self.configure_kafka()
+        # Instantiate Kafka producer and consumer for workloads
+        self.kafka_producer = self.create_kafka_producer()
+        self.kafka_consumer = self.create_kafka_consumer()
 
-        # Auth token will expire, remove existing so that later requests will get the new one
-        self.application_token = None
+        # Instantiate Kafka producer and consumer for policyengine control items
+        self.kafka_policyengine_consumer = self.create_kafka_consumer()
+        Thread(name=f'{self.application_name}_kafka_policyengine_thread', target=self.kafka_policyengine_listener, daemon=True).start()
+
+        # Instantiate Kafka producer and consumer for connection-management items
+        self.kafka_connmgr_consumer = self.create_kafka_consumer(auto_offset_reset='largest', group_id=uuid4().hex)
+        Thread(name=f'{self.application_name}_kafka_connmgr_thread', target=self.kafka_connmgr_listener, daemon=True).start()
+
+        # Wait until we can poll from policy engine in case there are any run_ids we should skip upfront
+        while not self.kafka_policyengine_ready:
+            time.sleep(5)
+
+        self.logger.info("Application ready to process messages.")
+
+    def kafka_policyengine_listener(self):
+        """
+        Consume messages from policyengine control topics.
+
+        STOP: Ignore the specified messages with the matching run_id since the policy was stopped
+        """
+        self.logger.info("We are starting the polling of policyengine control topic")
+        self.kafka_policyengine_consumer.subscribe([f'{self.application_name}_ctrl_work'])
+        while True:
+            unparsed_message = self.kafka_policyengine_consumer.poll(timeout=.1)
+
+            if not self.kafka_policyengine_ready and self.kafka_policyengine_consumer.assignment():
+                self.kafka_policyengine_ready = True
+
+            message = self.parse_message(unparsed_message)
+            try:
+                if message['action_id'] in SUPPORTED_POLICY_CONTROL_IDS:
+                    if message['action_id'] == 'STOP':
+                        self.kafka_ignored_run_ids.add(message['run_id'])
+                        self.logger.debug("Added item to ignored set: %s", str(self.kafka_ignored_run_ids))
+            except (AttributeError, KeyError, TypeError):
+                # skip over any unsupported messages
+                pass
+
+    def parse_message(self, unparsed_message):
+        """Process a message as json."""
+        message = None
+        if unparsed_message:
+            if not unparsed_message.error():
+                try:
+                    message = json.loads(unparsed_message.value().decode(ENCODING))
+                except json.decoder.JSONDecodeError:
+                    self.logger.error("Message decode error - invalid JSON")
+        return message
+
+    def kafka_connmgr_listener(self):
+        """
+        Consume messages from policyengine and connection-manager topics.
+
+        Put any valid messages on a priority queue where the policyengine messages are higher priority
+        over connmgr connection updates.
+        """
+        self.kafka_connmgr_consumer.subscribe(['connection_updates'])
+        while True:
+            unparsed_message = self.kafka_connmgr_consumer.poll(timeout=.1)
+
+            message = self.parse_message(unparsed_message)
+            if message:
+                try:
+                    conn_key = message['key']
+
+                    # Pull in the latest connection information
+                    self.conn_details = self.get_connection_details()
+
+                    # put the changed connection information in a set where the application can reference in order to close
+                    # the existing connection it may have and create a new one
+                    self.kafka_connections_to_update.add(conn_key)
+
+                except (AttributeError, KeyError, TypeError):
+                    # skip over any unsupported messages
+                    pass
 
     def stop(self):
         """Stop Application."""
