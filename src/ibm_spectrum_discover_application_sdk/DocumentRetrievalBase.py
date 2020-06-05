@@ -265,7 +265,8 @@ class DocumentKey(object):
         self.datasource = doc['datasource']
         self.cluster = doc['cluster']
         self.path = doc['path'].encode(ENCODING)
-        self.filetype = doc['type']
+        if 'type' in doc.keys():  # deepinspect
+            self.filetype = doc['type']
         # a unique identifier for the connection this document belongs to.
         self.id = self.datasource + ':' + self.cluster
 
