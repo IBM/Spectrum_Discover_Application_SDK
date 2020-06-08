@@ -59,6 +59,10 @@ class ApplicationBase():
 
     SSH_KEY_LOCATION ........... Full path to the private ssh key - id_rsa file
                                  - default: None
+
+    PRESERVE_STAT_TIME ....... Preserve the atime/mtime of files when using deepinspect via
+                                 NFS, SMB, and Local Scale connections.
+                                 - default: False
     """
 
     def __init__(self, reg_info):
@@ -167,6 +171,9 @@ class ApplicationBase():
 
         # can be set by apps when starting if they wish to overwrite existing registration info
         self.update_registration = False
+
+        # Whether or not to preserve file access time for deepinspect policies
+        self.preserve_stat_time = os.environ.get('PRESERVE_STAT_TIME', False)
 
     @staticmethod
     def _create_host_from_env(host, port, protocol):
@@ -530,7 +537,7 @@ class ApplicationBase():
             aws_secret_access_key=aws_secret_access_key
         )
 
-        self.connections[(conn['datasource']), conn['cluster']] = ('COS', client)
+        self.connections[(conn['datasource']), conn['cluster']] = ('COS', client, conn)
         self.logger.info('Successfully created cos connection for: %s', conn['name'])
 
     def mount_nfs(self, local_mount, host):
@@ -538,11 +545,12 @@ class ApplicationBase():
         if not host:
             raise IOError('Host not defined so cannot create NFS mount.')
 
+        mount_access = 'rw' if self.preserve_stat_time else 'ro'
+
         if not os.path.ismount(local_mount):
             try:
-                check_call('mkdir -p {local_mount}'.format(local_mount=local_mount), shell=True)
-                check_call('mount -t nfs -o nolock -o ro {host} {local_mount}'
-                           .format(host=host, local_mount=local_mount), shell=True)
+                check_call(f'mkdir -p {local_mount}', shell=True)
+                check_call(f'mount -t nfs -o nolock -o {mount_access} {host} {local_mount}', shell=True)
                 self.logger.info('Mounted remote NFS folder %s', host)
             except CalledProcessError:
                 # Not fatal, this might not be an active connection
@@ -558,8 +566,9 @@ class ApplicationBase():
         self.mount_nfs(mount_path_prefix, remote_nfs_mount)
         # need to store this to correlate connections in work messages
         conn['additional_info'] = additional_info
+        conn['additional_info']['preserve_stat_time'] = True if self.preserve_stat_time else False
 
-        self.connections[(conn['datasource']), conn['cluster']] = ('NFS', conn)
+        self.connections[(conn['datasource']), conn['cluster']] = ('NFS', None, conn)
         self.logger.info('Successfully created nfs connection for: %s', conn['name'])
 
     def create_scale_connection(self, conn):
@@ -578,14 +587,16 @@ class ApplicationBase():
             except Exception:
                 pass
 
+            additional_info = json.loads(conn['additional_info'])
+            conn['additional_info'] = additional_info
+            conn['additional_info']['preserve_stat_time'] = True if self.preserve_stat_time else False
+
             if local_conn:
-                self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale Local', conn)
+                self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale Local', None, conn)
                 self.logger.info('Successfully created local scale connection for: %s', conn['name'])
                 return
 
             xport = paramiko.Transport(conn['host'])
-
-            additional_info = json.loads(conn['additional_info'])
 
             if 'auth_type' in additional_info:  # 2.0.3.1+
                 if additional_info['auth_type'] == 'password':
@@ -606,7 +617,7 @@ class ApplicationBase():
 
             sftp = paramiko.SFTPClient.from_transport(xport)
             if sftp:
-                self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale', sftp)
+                self.connections[(conn['datasource']), conn['cluster']] = ('Spectrum Scale', sftp, conn)
                 self.logger.info('Successfully created scale connection for: %s', conn['name'])
 
         except (paramiko.ssh_exception.BadHostKeyException, paramiko.ssh_exception.AuthenticationException,
@@ -619,6 +630,7 @@ class ApplicationBase():
             host = conn['host']
             password = self.cipher.decrypt(conn['password'])
             export_path = conn['mount_point']
+            mount_access = 'rw' if self.preserve_stat_time else 'ro'
 
             if '\\' in conn['user']:
                 (domain, user) = conn['user'].split('\\')
@@ -632,7 +644,7 @@ class ApplicationBase():
             self.logger.error('Skipping creation of SMB connection: %s. %s is not defined.', conn['name'], str(ke))
             return False
 
-        cmd = f'mount -t cifs \'{export_path}\' {local_mount} -o user=\'{user}\' -o password=\'{password}\' -o ro'
+        cmd = f'mount -t cifs \'{export_path}\' {local_mount} -o user=\'{user}\' -o password=\'{password}\' -o {mount_access}'
         if domain:
             cmd += f' -o domain={domain}'
 
@@ -655,12 +667,13 @@ class ApplicationBase():
 
         conn['additional_info'] = {}
         conn['additional_info']['local_mount'] = local_mount
+        conn['additional_info']['preserve_stat_time'] = True if self.preserve_stat_time else False
 
         mounted = self.mount_smb(conn, local_mount)
         if not mounted:
             return
 
-        self.connections[(conn['datasource']), conn['cluster']] = ('SMB/CIFS', conn)
+        self.connections[(conn['datasource']), conn['cluster']] = ('SMB/CIFS', None, conn)
         self.logger.info('Successfully created smb connection for: %s', conn['name'])
 
     def connect_to_datasources(self):

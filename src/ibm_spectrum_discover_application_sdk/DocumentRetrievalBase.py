@@ -23,26 +23,26 @@ class DocumentRetrievalFactory:
     @staticmethod
     def create(application, key):
         """Lookup connection and create required type."""
-        platform, client = application.connections.get((key.datasource, key.cluster), (None, None))
+        platform, client, connection = application.connections.get((key.datasource, key.cluster), (None, None, None))
 
-        if platform and client:
+        if platform and (client or connection):
             if platform == 'COS':
-                return DocumentRetrievalCOS(client)
+                return DocumentRetrievalCOS(client, connection)
             elif platform == 'NFS':
-                return DocumentRetrievalNFS(client)
+                return DocumentRetrievalNFS(client, connection)
             elif platform == 'Spectrum Scale':
-                return DocumentRetrievalScale(client)
+                return DocumentRetrievalScale(client, connection)
             elif platform == 'Spectrum Scale Local':
-                return DocumentRetrievalLocalScale(client)
+                return DocumentRetrievalLocalScale(client, connection)
             elif platform == 'SMB/CIFS':
-                return DocumentRetrievalSMB(client)
+                return DocumentRetrievalSMB(client, connection)
         return None
 
 
 class DocumentRetrievalBase():
     """A class to retrieve a document via a Spectrum Discover Connection."""
 
-    def __init__(self, client):
+    def __init__(self, client, connection):
         """Constructor."""
         # Instantiate logger
         loglevels = {'INFO': logging.INFO, 'DEBUG': logging.DEBUG,
@@ -55,6 +55,15 @@ class DocumentRetrievalBase():
         self.logger = logging.getLogger(__name__)
 
         self.client = client
+        self.connection = connection
+
+        self.stat_atime = None
+        self.stat_mtime = None
+
+        try:
+            self.preserve_stat_time = self.connection['additional_info']['preserve_stat_time']
+        except (KeyError, TypeError):
+            self.preserve_stat_time = False
 
     def get_document(self, key):
         """
@@ -98,6 +107,42 @@ class DocumentRetrievalBase():
             return prefix + "." + filetype
         return prefix
 
+    def save_stat_times(self, filepath, method=os, nanoseconds=True):
+        """
+        Save the stat info for the given file.
+
+        If nanoseconds=True, nano-second results will be preserved, else seconds will be preserved.
+        By default, use the os module. For remote scale connections, use paramiko sftp module.
+        """
+        self.logger.debug('Attempting to get stat info for %s', filepath)
+        try:
+            stat = method.stat(filepath)
+            if nanoseconds:
+                self.stat_atime = stat.st_atime_ns
+                self.stat_mtime = stat.st_mtime_ns
+            else:
+                self.stat_atime = stat.st_atime
+                self.stat_mtime = stat.st_mtime
+
+            self.logger.debug('Successfully retrieved stat info for %s. atime: %s, mtime: %s', filepath, str(self.stat_atime), str(self.stat_mtime))
+        except (PermissionError, FileNotFoundError) as error:
+            self.logger.error('Failed to retrieve stat info for %s. Error: %s', filepath, str(error))
+            self.stat_atime = None
+            self.stat_mtime = None
+
+    def restore_stat_times(self, filepath, method=os, nanoseconds=True):
+        """Restore the stat info (atime, mtime) for the given file."""
+        if self.stat_atime and self.stat_mtime:
+            self.logger.debug('Attempting to restore stat info for %s', filepath)
+            try:
+                if nanoseconds:
+                    method.utime(filepath, ns=(self.stat_atime, self.stat_mtime))
+                else:
+                    method.utime(filepath, (self.stat_atime, self.stat_mtime))
+
+                self.logger.debug('Successfully restored stat info for %s. atime: %s, mtime: %s', filepath, str(self.stat_atime), str(self.stat_mtime))
+            except (PermissionError, FileNotFoundError, OSError) as error:
+                self.logger.error('Failed to restore stat info for %s. Error: %s', filepath, str(error))
 
 class DocumentRetrievalCOS(DocumentRetrievalBase):
     """Create a COS document class.
@@ -161,17 +206,23 @@ class DocumentRetrievalNFS(DocumentRetrievalBase):
         """Return document filepath."""
         self.filepath = None
 
-        if self.client:
-            mount_path_prefix = self.client['additional_info']['local_mount']
-            source_path_prefix = self.client['mount_point']
+        if self.connection:
+            mount_path_prefix = self.connection['additional_info']['local_mount']
+            source_path_prefix = self.connection['mount_point']
             self.filepath = re.sub('^' + source_path_prefix, mount_path_prefix, key.path.decode(ENCODING))
         else:
             self.logger.info('No document match')
+
+        if self.preserve_stat_time:
+            self.save_stat_times(self.filepath)
 
         return self.filepath
 
     def cleanup_document(self):
         """Cleanup files as needed."""
+        if self.preserve_stat_time:
+            self.restore_stat_times(self.filepath)
+
         self.logger.debug("NFS: Not doing any cleanup.")
 
 
@@ -186,6 +237,10 @@ class DocumentRetrievalScale(DocumentRetrievalBase):
     def get_document(self, key):
         """Return document filepath."""
         self.filepath = None
+        self.key = key
+
+        if self.preserve_stat_time:
+            self.save_stat_times(key.path.decode(ENCODING), method=self.client, nanoseconds=False)
 
         if self.client:
             try:
@@ -208,6 +263,9 @@ class DocumentRetrievalScale(DocumentRetrievalBase):
         """Cleanup files as needed."""
         self.logger.debug("SCALE: Attempting to delete file: %s", self.filepath)
 
+        if self.preserve_stat_time:
+            self.restore_stat_times(self.key.path.decode(ENCODING), method=self.client, nanoseconds=False)
+
         try:
             os.remove(self.filepath)
         except FileNotFoundError:
@@ -221,12 +279,22 @@ class DocumentRetrievalLocalScale(DocumentRetrievalBase):
     No need to download or cleanup since accessed direclty upon the mount point.
     """
 
+    filepath = None
+
     def get_document(self, key):
         """Return Document Key."""
-        return key.path.decode(ENCODING)
+        self.filepath = key.path.decode(ENCODING)
+
+        if self.preserve_stat_time:
+            self.save_stat_times(self.filepath)
+
+        return self.filepath
 
     def cleanup_document(self):
         """Cleanup files as needed."""
+        if self.preserve_stat_time:
+            self.restore_stat_times(self.filepath)
+
         self.logger.debug("Scale Local: Not doing any cleanup.")
 
 
@@ -243,16 +311,22 @@ class DocumentRetrievalSMB(DocumentRetrievalBase):
         """Return document filepath."""
         self.filepath = None
 
-        if self.client:
-            mount_path_prefix = self.client['additional_info']['local_mount']
+        if self.connection:
+            mount_path_prefix = self.connection['additional_info']['local_mount']
             self.filepath = mount_path_prefix + key.path.decode(ENCODING)
         else:
             self.logger.info('No document match')
+
+        if self.preserve_stat_time:
+            self.save_stat_times(self.filepath)
 
         return self.filepath
 
     def cleanup_document(self):
         """Cleanup files as needed."""
+        if self.preserve_stat_time:
+            self.restore_stat_times(self.filepath)
+
         self.logger.debug("SMB: Not doing any cleanup.")
 
 
