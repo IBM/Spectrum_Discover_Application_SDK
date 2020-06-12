@@ -439,7 +439,6 @@ class ApplicationBase():
         nfs mounts.
         """
         self.logger.debug("Querying information for connections")
-        self.obtain_token()
         try:
 
             headers = {}
@@ -449,8 +448,7 @@ class ApplicationBase():
                 headers['X-ALLOW-BASIC-AUTH-SD'] = 'true'
                 auth = requests.auth.HTTPBasicAuth(self.application_user, self.application_user_password)
             else:
-                if not self.application_token:
-                    self.obtain_token()
+                self.obtain_token()
                 headers['Authorization'] = 'Bearer ' + self.application_token
                 auth = None
 
