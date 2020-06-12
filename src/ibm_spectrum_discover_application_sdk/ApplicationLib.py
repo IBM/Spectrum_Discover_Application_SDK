@@ -749,7 +749,7 @@ class ApplicationBase():
         self.logger.info("We are starting the polling of policyengine control topic")
         self.kafka_policyengine_consumer.subscribe([f'{self.application_name}_ctrl_work'])
         while True:
-            unparsed_message = self.kafka_policyengine_consumer.poll(timeout=.1)
+            unparsed_message = self.kafka_policyengine_consumer.poll(timeout=1)
 
             if not self.kafka_policyengine_ready and self.kafka_policyengine_consumer.assignment():
                 self.kafka_policyengine_ready = True
@@ -784,7 +784,7 @@ class ApplicationBase():
         """
         self.kafka_connmgr_consumer.subscribe(['connection_updates'])
         while True:
-            unparsed_message = self.kafka_connmgr_consumer.poll(timeout=.1)
+            unparsed_message = self.kafka_connmgr_consumer.poll(timeout=1)
 
             message = self.parse_message(unparsed_message)
             if message:
