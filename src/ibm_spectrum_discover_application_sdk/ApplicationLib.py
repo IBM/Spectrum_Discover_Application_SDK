@@ -150,8 +150,11 @@ class ApplicationBase():
         self.kafka_root_cert = cert_path("kafka-ca.crt")
 
         # Kafka config - this info comes from registration endpoint
-        self.work_q_name = '%s_work' % self.application_name
-        self.compl_q_name = '%s_compl' % self.application_name
+        self.work_q_name = f'{self.application_name}_work'
+        self.compl_q_name = f'{self.application_name}_compl'
+        self.ctrl_work_q_name = f'{self.application_name}_ctrl_work'
+        self.ctrl_compl_q_name = f'{self.application_name}_ctrl_compl'
+        self.connmgr_work_q_name = 'connection_updates'
 
         # Kafka config - updated as part of registration
         self.kafka_host = None
@@ -160,6 +163,7 @@ class ApplicationBase():
         self.kafka_producer = None
         self.kafka_consumer = None
         self.kafka_policyengine_consumer = None
+        self.kafka_policyengine_producer = None
         self.kafka_connmgr_consumer = None
         self.kafka_policyengine_ready = False
         self.kafka_ignored_run_ids = set()
@@ -284,6 +288,8 @@ class ApplicationBase():
         self.kafka_port = reg_response['broker_port']
         self.work_q_name = reg_response['work_q']
         self.compl_q_name = reg_response['completion_q']
+        self.ctrl_work_q_name = reg_response['ctrl_work_q']
+        self.ctrl_compl_q_name = reg_response['ctrl_completion_q']
         self.kafka_host = "%s:%s" % (self.kafka_ip, self.kafka_port)
 
         self.logger.info("Application is registered")
@@ -728,6 +734,7 @@ class ApplicationBase():
 
         # Instantiate Kafka producer and consumer for policyengine control items
         self.kafka_policyengine_consumer = self.create_kafka_consumer()
+        self.kafka_policyengine_producer = self.create_kafka_producer()
         Thread(name=f'{self.application_name}_kafka_policyengine_thread', target=self.kafka_policyengine_listener, daemon=True).start()
 
         # Instantiate Kafka producer and consumer for connection-management items
@@ -747,7 +754,7 @@ class ApplicationBase():
         STOP: Ignore the specified messages with the matching run_id since the policy was stopped
         """
         self.logger.info("We are starting the polling of policyengine control topic")
-        self.kafka_policyengine_consumer.subscribe([f'{self.application_name}_ctrl_work'])
+        self.kafka_policyengine_consumer.subscribe([self.ctrl_work_q_name])
         while True:
             unparsed_message = self.kafka_policyengine_consumer.poll(timeout=1)
 
@@ -759,10 +766,22 @@ class ApplicationBase():
                 if message['action_id'] in SUPPORTED_POLICY_CONTROL_IDS:
                     if message['action_id'] == 'STOP':
                         self.kafka_ignored_run_ids.add(message['run_id'])
-                        self.logger.debug("Added item to ignored set: %s", str(self.kafka_ignored_run_ids))
+                        self.logger.debug("Added item to ignored set: %s", str(message['run_id']))
+
+                        message['response_status'] = 'success'
+                        self.kafka_policyengine_producer.produce(self.ctrl_compl_q_name, json.dumps(message), callback=self.producer_acked)
+                        self.kafka_policyengine_producer.poll(1)
             except (AttributeError, KeyError, TypeError):
                 # skip over any unsupported messages
                 pass
+
+    def producer_acked(self, err, msg):
+        """Test whether a message was produced."""
+        if err is not None:
+            self.logger.error("Unsuccessfully produced policyengine ctrl message: %s: %s", str(msg), str(err))
+        else:
+            self.logger.debug("Successfully produced policyengine ctrl message: %s", str(msg))
+
 
     def parse_message(self, unparsed_message):
         """Process a message as json."""
@@ -782,7 +801,7 @@ class ApplicationBase():
         Put any valid messages on a priority queue where the policyengine messages are higher priority
         over connmgr connection updates.
         """
-        self.kafka_connmgr_consumer.subscribe(['connection_updates'])
+        self.kafka_connmgr_consumer.subscribe([self.connmgr_work_q_name])
         while True:
             unparsed_message = self.kafka_connmgr_consumer.poll(timeout=1)
 
