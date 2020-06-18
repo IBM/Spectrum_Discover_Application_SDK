@@ -288,8 +288,10 @@ class ApplicationBase():
         self.kafka_port = reg_response['broker_port']
         self.work_q_name = reg_response['work_q']
         self.compl_q_name = reg_response['completion_q']
-        self.ctrl_work_q_name = reg_response['ctrl_work_q']
-        self.ctrl_compl_q_name = reg_response['ctrl_completion_q']
+        if 'ctrl_work_q' in reg_response:
+            self.ctrl_work_q_name = reg_response['ctrl_work_q']
+        if 'ctrl_completion_q' in reg_response:
+            self.ctrl_compl_q_name = reg_response['ctrl_completion_q']
         self.kafka_host = "%s:%s" % (self.kafka_ip, self.kafka_port)
 
         self.logger.info("Application is registered")
