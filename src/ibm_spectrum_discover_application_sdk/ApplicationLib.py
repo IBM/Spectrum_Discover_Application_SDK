@@ -661,7 +661,7 @@ class ApplicationBase():
             export_path = conn['mount_point']
             mount_access = 'rw' if self.preserve_stat_time else 'ro'
 
-            if not export_path.endswith(fileset):
+            if fileset and not export_path.endswith(fileset):
                 seperator_char = export_path[0]
                 export_path = f'{export_path}{seperator_char}{fileset}'
             self.logger.debug('export_path = %s', export_path)

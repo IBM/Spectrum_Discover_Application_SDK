@@ -50,7 +50,7 @@ class DocumentRetrievalFactory:
             elif platform == 'SMB/CIFS':
                 _, client, connection = application.create_smb_connection(connection, key.fileset)
                 return DocumentRetrievalSMB(client, connection)
-        except KeyError:
+        except (TypeError, KeyError):
             # No connection found
             pass
         return None
@@ -389,10 +389,8 @@ class DocumentKey(object):
         self.datasource = doc['datasource']
         self.cluster = doc['cluster']
         self.path = doc['path'].encode(ENCODING)
-        if 'type' in doc.keys():  # deepinspect
-            self.filetype = doc['type']
-        if 'fileset' in doc.keys(): # 2.0.3+
-            self.fileset = doc['fileset']
+        self.filetype = doc['type'] if 'type' in doc.keys() else None  # deepinspect
+        self.fileset = doc['fileset'] if 'fileset' in doc.keys() else None  # 2.0.3.1+
         # a unique identifier for the connection this document belongs to.
         self.id = self.datasource + ':' + self.cluster
 
