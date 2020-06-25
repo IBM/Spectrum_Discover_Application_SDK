@@ -36,7 +36,7 @@ class DocumentRetrievalFactory:
         connection = DocumentRetrievalFactory._get_matching_connection(key.datasource, key.cluster, application.conn_details)
         try:
             platform = connection['platform']
-            if platform == 'COS':
+            if platform == 'IBM COS':
                 _, client, connection = application.create_cos_connection(connection)
                 return DocumentRetrievalCOS(client, connection)
             elif platform == 'NFS':

@@ -560,7 +560,7 @@ class ApplicationBase():
             aws_secret_access_key=aws_secret_access_key
         )
 
-        self.connections[(conn['datasource']), conn['cluster']] = ('COS', client, conn)
+        self.connections[(conn['datasource']), conn['cluster']] = ('IBM COS', client, conn)
         self.logger.info('Successfully created cos connection for: %s', conn['name'])
         return self.connections[(conn['datasource']), conn['cluster']]
 
