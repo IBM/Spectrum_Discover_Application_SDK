@@ -283,12 +283,16 @@ class DocumentRetrievalScale(DocumentRetrievalBase):
             try:
                 self.filepath = self.create_file_path('/tmp/scalefile_' + str(os.getpid()), self.key.filetype)
                 self.client.get(self.key.path, self.filepath)
-            except UnicodeDecodeError:
-                self.logger.error('Could not decode file %s', self.key.path.decode(ENCODING))
-            except FileNotFoundError:
-                self.logger.error('Could not find file %s', self.key.path.decode(ENCODING))
-            except OSError:  # Seen when scale nsd disk is down and file is not accessible
-                self.logger.error('Could not transfer file %s', self.key.path.decode(ENCODING))
+            except (UnicodeDecodeError, FileNotFoundError, OSError) as error:
+                if isinstance(error, UnicodeDecodeError):
+                    self.logger.error('Could not decode file %s', self.key.path.decode(ENCODING))
+                elif isinstance(error, FileNotFoundError):
+                    self.logger.error('Could not find file %s', self.key.path.decode(ENCODING))
+                elif isinstance(error, OSError):  # Seen when scale nsd disk is down and file is not accessible
+                    self.logger.error('Could not transfer file %s', self.key.path.decode(ENCODING))
+                # On an error, paramiko will create an empty file that needs to be cleaned up.
+                self.cleanup_document()
+                self.filepath = None
 
         else:
             self.logger.info('No document match')
