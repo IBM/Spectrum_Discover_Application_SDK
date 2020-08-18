@@ -1,11 +1,18 @@
-FROM centos:7.7.1908
+FROM registry.access.redhat.com/ubi8/s2i-core
 
 ENV IS_DOCKER_CONTAINER True
 ENV LC_ALL en_US.UTF-8
 
-RUN yum install -y python3 python3-devel python3-setuptools python3-pip openssl-devel gcc make nfs-utils cifs-utils && \
-    python3 -m pip install ibm_spectrum_discover_application_sdk && \
-    yum clean all
+ARG major=0
+ARG minor=0
+ARG patch=19
+
+RUN tar -C /install_media/ -xzf /install_media/ubi8_packages.tar.gz && \
+    cp /install_media/ubi8_packages/ubi8_local.repo /etc/yum.repos.d/ && \
+    yum install -y python3 python3-devel python3-setuptools python3-pip openssl-devel gcc make nfs-utils cifs-utils && \
+    python3 -m pip install /install_media/ibm_spectrum_discover_application_sdk-${major}.${minor}.${patch}-py2.py3-none-any.whl && \
+    yum clean all && \
+    rm -f /etc/yum.repos.d/ubi8_local.repo
 
 ENTRYPOINT []
 CMD []

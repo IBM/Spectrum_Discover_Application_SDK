@@ -11,46 +11,53 @@ list of documents to perform those actions on.
 The application libraries provide functions to:
    * Initialize the application and register it with the Spectrum Discover host
    * Read and parse work messages from the PolicyEngine
-   * Retrieve the contents of the documents via Spectrum Discover connections
-   * Construct and send the results back to the PolicyEngine
+   * Retrieve the contents of the documents via Spectrum Discover/COS/NFS/SMB connections
+   * Construct and send the results back to the PolicyEngine with associated tags
 
 The Application SDK provides abstracted methods to send and receive the relevant information for the work messages
 and sending the results back to the PolicyEngine.
 
-An example application using these libraries is also provided in this repository.
+An example application using these libraries is also provided in Spectrum_Discover_Example_Application repository.
 
 Building a python wheel
 ===================
 If you have local modifications to the SDK that you would like to send via a Pull Request (PR), you can test your build
-locally by creating a python wheel. If you are not making changes to the SDK and plan to upstream, there is no need to run
+locally by creating a python wheel. If you are not making changes to the SDK, there is no need to run
 the below commands and you can use the currently published SDK on pypi.
 You can create a local python wheel with the following command:
+
 ```
-python3.6 -m pip install wheel
-python3.6 setup.py sdist bdist_wheel --universal --dist=dist
+Edit the setup.py to increment the version number
+ $ python3.6 -m pip install wheel
+ $ python3.6 setup.py sdist bdist_wheel --universal --dist=dist
+Edit the Dockerfile to increment the patch arg version
 ```
 
 Building a docker image
 ===================
-Assuming that you have already created the wheel, you can modify the Dockerfile to `COPY` the wheel and install.
-An example modification of the Dockerfile would be:
+This dockerfile has been switched to use `buildah`.
 
-`COPY dist/ibm_spectrum_discover_application_sdk-0.0.X-py2.py3-none-any.whl /` (above the existing RUN command)
+buildah has the benefit of creating a mount while building so you no longer need to copy temp files into the build which increases the layer size.
+This also assumes that you have a ubi8_packages.tar.gz file that contains rpms that are not available in the ubi repos. In our case we are using rpms from centos 8 as you cannot distribute non-ubi redhat rpms.
+Read the [Red Hat UBI FAQ](https://developers.redhat.com/articles/ubi-faq) for more information.
 
-and
-
-`RUN python3 -m pip install dist/ibm_spectrum_discover_application_sdk-0.0.X-py2.py3-none-any.whl` (below existing RUN command)
-
-where `X` in both cases is an incremented version number specified in the setup.py file. Remove these lines when submitting a PR.
-Once accepted, the file will be grabbed automatically from the pypi repository.
-
-You can then run the following command to create the docker image.
+The ubi8_packages.tar.gz file needs to contain the rpms and relevant dependencies for things like nfs-utils and cifs-utils. Before packaging up the rpms, you can issue a `createrepo .` within the folder to generate the repodata.
+The tar.gz also needs to include a file to setup the repo.
+In our case we called it `ubi8_local.repo` and the contents are:
 ```
-docker build .
-docker image ls | head -n 2
+[ubi-8-local]
+baseurl = file:///install_media/ubi8_packages/
+enabled = 1
+gpgcheck = 0
+name = Packages required for updating ubi8 images
 ```
 
-You can now use this docker image as a template for containerizing the Example Application from:
-`https://github.com/IBM/Spectrum_Discover_Example_Application`.
+Assuming that you have already created the wheel, you can then create the SDK image:
+```
+mkdir -p install_media
+cp ubi8_packages.tar.gz install_media
+cp dist/ibm_spectrum_discover_application_sdk-*-py2.py3-none-any.whl install_media
+sudo buildah bud -f Dockerfile -t docker-daemon:ibmcom/spectrum-discover-application-sdk:latest -v $(pwd)/install_media:/install_media/ .
+```
 
-In the Spectrum_Discover_Example_Application/Dockerfile, you can change the `FROM` to import your container ID for testing purposes.
+You can now use this docker image as a template for containerizing the [Example Application](https://github.com/IBM/Spectrum_Discover_Example_Application).
