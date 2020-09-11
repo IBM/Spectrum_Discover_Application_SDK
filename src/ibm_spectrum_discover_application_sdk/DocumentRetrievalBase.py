@@ -39,6 +39,9 @@ class DocumentRetrievalFactory:
             if platform == 'IBM COS':
                 _, client, connection = application.create_cos_connection(connection)
                 return DocumentRetrievalCOS(client, connection)
+            if platform == 'S3':
+                _, client, connection = application.create_s3_connection(connection)
+                return DocumentRetrievalCOS(client, connection)
             elif platform == 'NFS':
                 _, client, connection = application.create_nfs_connection(connection)
                 return DocumentRetrievalNFS(client, connection)
@@ -184,11 +187,18 @@ class DocumentRetrievalCOS(DocumentRetrievalBase):
         self.filepath = None
 
         if self.client:
-            obj = self.client.get_object(Bucket=key.datasource, Key=key.path.decode(ENCODING).split('/', 1)[1])
-            content = obj['Body'].read()
-            self.filepath = self.create_file_path('/tmp/cosfile_' + str(os.getpid()), key.filetype)
-            with open(self.filepath, 'w', encoding=ENCODING) as file:
-                file.write(content.decode(ENCODING, 'replace'))
+            if '/' in key.path.decode(ENCODING):
+                try:
+                    obj = self.client.get_object(Bucket=key.datasource, Key=key.path.decode(ENCODING).split('/', 1)[1])
+                    content = obj['Body'].read()
+                    self.filepath = self.create_file_path('/tmp/cosfile_' + str(os.getpid()), key.filetype)
+                    with open(self.filepath, 'w', encoding=ENCODING) as file:
+                        file.write(content.decode(ENCODING, 'replace'))
+                except self.client.exceptions.NoSuchKey:
+                    self.logger.error('File %s does not exist', key.path.decode(ENCODING))
+
+            else:
+                self.logger.error('Supplied path %s not in expected format of bucket/filename', key.path.decode(ENCODING))
         else:
             self.logger.error('Could not access file %s', key.path.decode(ENCODING))
 

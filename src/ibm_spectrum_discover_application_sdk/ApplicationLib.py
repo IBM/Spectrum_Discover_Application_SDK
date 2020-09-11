@@ -564,6 +564,30 @@ class ApplicationBase():
         self.logger.info('Successfully created cos connection for: %s', conn['name'])
         return self.connections[(conn['datasource']), conn['cluster']]
 
+    def create_s3_connection(self, conn):
+        """Create an S3 connection using details from connmgr."""
+        additional_info = json.loads(conn['additional_info'])
+        if isinstance(additional_info, str):
+            additional_info = json.loads(additional_info)
+        aws_access_key_id = additional_info.get('access_key', None)
+        aws_secret_access_key = additional_info.get('secret_key', None)
+        if aws_secret_access_key:
+            try:
+                aws_secret_access_key = self.cipher.decrypt(aws_secret_access_key)
+            except Exception as err:  # pylint: disable=broad-except
+                log_error("Credentials problem '%s' with S3 connection %s" % (str(err), conn['name']))
+
+        client = boto3.client(
+            's3',
+            endpoint_url='http://' + conn['host'],
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key
+        )
+
+        self.connections[(conn['datasource']), conn['cluster']] = ('S3', client, conn)
+        self.logger.info('Successfully created S3 connection for: %s', conn['name'])
+        return self.connections[(conn['datasource']), conn['cluster']]
+
     def mount_nfs(self, local_mount, host):
         """Mount the NFS file system."""
         if not host:
