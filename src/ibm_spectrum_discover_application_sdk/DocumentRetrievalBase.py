@@ -38,10 +38,10 @@ class DocumentRetrievalFactory:
             platform = connection['platform']
             if platform == 'IBM COS':
                 _, client, connection = application.create_cos_connection(connection)
-                return DocumentRetrievalCOS(client, connection)
+                return DocumentRetrievalS3(client, connection)
             if platform == 'S3':
                 _, client, connection = application.create_s3_connection(connection)
-                return DocumentRetrievalCOS(client, connection)
+                return DocumentRetrievalS3(client, connection)
             elif platform == 'NFS':
                 _, client, connection = application.create_nfs_connection(connection)
                 return DocumentRetrievalNFS(client, connection)
@@ -173,10 +173,10 @@ class DocumentRetrievalBase():
             except (PermissionError, FileNotFoundError, OSError) as error:
                 self.logger.error('Failed to restore stat info for %s. Error: %s', filepath, str(error))
 
-class DocumentRetrievalCOS(DocumentRetrievalBase):
-    """Create a COS document class.
+class DocumentRetrievalS3(DocumentRetrievalBase):
+    """Create a S3/COS document class.
 
-    This will act appropriately upon COS documents that have been downloaded as temp files.
+    This will act appropriately upon S3/COS documents that have been downloaded as temp files.
     """
 
     filepath = None
@@ -189,12 +189,10 @@ class DocumentRetrievalCOS(DocumentRetrievalBase):
         if self.client:
             if '/' in key.path.decode(ENCODING):
                 try:
-                    obj = self.client.get_object(Bucket=key.datasource, Key=key.path.decode(ENCODING).split('/', 1)[1])
-                    content = obj['Body'].read()
                     self.filepath = self.create_file_path('/tmp/cosfile_' + str(os.getpid()), key.filetype)
-                    with open(self.filepath, 'w', encoding=ENCODING) as file:
-                        file.write(content.decode(ENCODING, 'replace'))
-                except self.client.exceptions.NoSuchKey:
+                    self.client.download_file(key.datasource, key.path.decode(ENCODING).split('/', 1)[1],
+                                            self.filepath)
+                except (self.client.exceptions.NoSuchKey, self.client.exceptions.ClientError):
                     self.logger.error('File %s does not exist', key.path.decode(ENCODING))
 
             else:
@@ -205,7 +203,7 @@ class DocumentRetrievalCOS(DocumentRetrievalBase):
         return self.filepath
 
     def get_headers(self, key):
-        """Return the COS HTTPHeaders for a key, bucket."""
+        """Return the HTTPHeaders for a key, bucket."""
         http_headers = None
 
         if self.client:
@@ -221,7 +219,7 @@ class DocumentRetrievalCOS(DocumentRetrievalBase):
 
     def cleanup_document(self):
         """Cleanup files as needed."""
-        self.logger.debug("COS: Attempting to delete file: %s", self.filepath)
+        self.logger.debug("COS/S3: Attempting to delete file: %s", self.filepath)
 
         try:
             os.remove(self.filepath)
