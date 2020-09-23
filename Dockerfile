@@ -10,6 +10,7 @@ ARG patch=19
 RUN tar -C /install_media/ -xzf /install_media/ubi8_packages.tar.gz && \
     cp /install_media/ubi8_packages/ubi8_local.repo /etc/yum.repos.d/ && \
     yum install -y python3 python3-devel python3-setuptools python3-pip openssl-devel gcc make nfs-utils cifs-utils && \
+    python3 -m pip install pip==19.2.3 && \
     python3 -m pip install /install_media/ibm_spectrum_discover_application_sdk-${major}.${minor}.${patch}-py2.py3-none-any.whl && \
     yum clean all && \
     rm -f /etc/yum.repos.d/ubi8_local.repo
