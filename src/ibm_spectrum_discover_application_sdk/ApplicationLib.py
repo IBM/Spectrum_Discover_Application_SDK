@@ -577,12 +577,18 @@ class ApplicationBase():
             except Exception as err:  # pylint: disable=broad-except
                 log_error("Credentials problem '%s' with S3 connection %s" % (str(err), conn['name']))
 
+        if conn['host'].startswith('http://') or conn['host'].startswith('https://'):
+            endpoint = conn['host']
+        else:
+            # If not specified, https is default
+            endpoint = 'https://' + conn['host']
+
         client = boto3.client(
             's3',
-            endpoint_url='http://' + conn['host'],
+            endpoint_url=endpoint,
             aws_access_key_id=aws_access_key_id,
             aws_secret_access_key=aws_secret_access_key
-        )
+            )
 
         self.connections[(conn['datasource']), conn['cluster']] = ('S3', client, conn)
         self.logger.info('Successfully created S3 connection for: %s', conn['name'])
