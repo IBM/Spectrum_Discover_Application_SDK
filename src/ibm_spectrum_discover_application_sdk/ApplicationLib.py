@@ -381,7 +381,7 @@ class ApplicationBase():
 
         raise Exception(err)
 
-    def create_kafka_consumer(self, auto_offset_reset='smallest', group_id='myagent_grp'):
+    def create_kafka_consumer(self, auto_offset_reset='earliest', group_id='myagent_grp'):
         """Instantiate consumer."""
         max_poll_interval = int(os.environ.get('MAX_POLL_INTERVAL', MAX_POLL_INTERVAL))
         session_timeout_ms = int(os.environ.get('SESSION_TIMEOUT_MS', SESSION_TIMEOUT_MS))
@@ -770,7 +770,7 @@ class ApplicationBase():
         Thread(name=f'{self.application_name}_kafka_policyengine_thread', target=self.kafka_policyengine_listener, daemon=True).start()
 
         # Instantiate Kafka producer and consumer for connection-management items
-        self.kafka_connmgr_consumer = self.create_kafka_consumer(auto_offset_reset='largest', group_id=uuid4().hex)
+        self.kafka_connmgr_consumer = self.create_kafka_consumer(auto_offset_reset='latest', group_id=uuid4().hex)
         Thread(name=f'{self.application_name}_kafka_connmgr_thread', target=self.kafka_connmgr_listener, daemon=True).start()
 
         # Wait until we can poll from policy engine in case there are any run_ids we should skip upfront
