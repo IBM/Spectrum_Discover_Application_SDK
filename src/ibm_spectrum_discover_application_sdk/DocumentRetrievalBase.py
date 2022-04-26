@@ -33,7 +33,11 @@ class DocumentRetrievalFactory:
     @staticmethod
     def create(application, key):
         """Lookup connection and create required type."""
+        if not key.cluster and not key.datasource:
+            return None
         connection = DocumentRetrievalFactory._get_matching_connection(key.datasource, key.cluster, application.conn_details)
+        if not connection:
+            return None
         try:
             platform = connection['platform']
             if platform == 'IBM COS':
@@ -194,6 +198,7 @@ class DocumentRetrievalS3(DocumentRetrievalBase):
                                             self.filepath)
                 except (self.client.exceptions.NoSuchKey, self.client.exceptions.ClientError):
                     self.logger.error('File %s does not exist', key.path.decode(ENCODING))
+                    return None
 
             else:
                 self.logger.error('Supplied path %s not in expected format of bucket/filename', key.path.decode(ENCODING))
@@ -395,11 +400,11 @@ class DocumentRetrievalSMB(DocumentRetrievalBase):
 class DocumentKey(object):
     """A class to identify a unique document on a Spectrum Discover Connection."""
 
-    def __init__(self, doc):
+    def __init__(self, doc, cluster=None, datasource=None):
         """Init."""
         self.fkey = doc['fkey']
-        self.datasource = doc['datasource']
-        self.cluster = doc['cluster']
+        self.datasource = datasource if datasource else doc.get('datasource', '')
+        self.cluster = cluster if cluster else doc.get('cluster', '')
         self.path = doc['path'].encode(ENCODING)
         self.filetype = doc['type'] if 'type' in doc.keys() else None  # deepinspect
         self.fileset = doc['fileset'] if 'fileset' in doc.keys() else None  # 2.0.3.1+

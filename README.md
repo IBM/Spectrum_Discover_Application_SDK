@@ -28,8 +28,8 @@ You can create a local python wheel with the following command:
 
 ```
 Edit the setup.py to increment the version number
- $ python3.6 -m pip install wheel
- $ python3.6 setup.py sdist bdist_wheel --universal --dist=dist
+ $ python3 -m pip install wheel
+ $ python3 setup.py sdist bdist_wheel --universal --dist=dist
 Edit the Dockerfile to increment the patch arg version
 ```
 
