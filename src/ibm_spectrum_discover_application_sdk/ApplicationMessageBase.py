@@ -101,11 +101,17 @@ class ApplicationMessageBase():
 
     def send_reply(self, response_msg):
         """Send message on kafka completion queue."""
-        self.kafka_producer.produce(self.compl_q_name, str(response_msg))
+        self.kafka_producer.produce(self.compl_q_name, str(response_msg), callback=self.producer_acked)
         self.kafka_producer.flush()
 
         self.kafka_consumer.commit()
 
+    def producer_acked(self, err, msg):
+        """Test whether a message was produced."""
+        if err is not None:
+            self.logger.error("Unsuccessfully produced reply message: %s: %s", str(msg), str(err))
+        else:
+            self.logger.debug("Successfully produced reply message")
 
 class ApplicationReplyMessage():
     """The reply message, and functions to build it."""

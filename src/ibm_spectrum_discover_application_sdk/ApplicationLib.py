@@ -762,10 +762,10 @@ class ApplicationBase():
 
         # Instantiate Kafka producer and consumer for workloads
         self.kafka_producer = self.create_kafka_producer()
-        self.kafka_consumer = self.create_kafka_consumer()
+        self.kafka_consumer = self.create_kafka_consumer(group_id=f"{self.application_name}")
 
         # Instantiate Kafka producer and consumer for policyengine control items
-        self.kafka_policyengine_consumer = self.create_kafka_consumer()
+        self.kafka_policyengine_consumer = self.create_kafka_consumer(group_id=f"{self.application_name}_policyengine")
         self.kafka_policyengine_producer = self.create_kafka_producer()
         Thread(name=f'{self.application_name}_kafka_policyengine_thread', target=self.kafka_policyengine_listener, daemon=True).start()
 
@@ -775,6 +775,7 @@ class ApplicationBase():
 
         # Wait until we can poll from policy engine in case there are any run_ids we should skip upfront
         while not self.kafka_policyengine_ready:
+            self.logger.info(f"Waiting for consumer to have Kafka partitions assigned")
             time.sleep(5)
 
         self.logger.info("Application ready to process messages.")
@@ -786,7 +787,11 @@ class ApplicationBase():
         STOP: Ignore the specified messages with the matching run_id since the policy was stopped
         """
         self.logger.info("We are starting the polling of policyengine control topic")
-        self.kafka_policyengine_consumer.subscribe([self.ctrl_work_q_name])
+
+        def log_partition_assignment(consumer, partitions):
+            self.logger.debug(f"Consumer {str(consumer)} assigned to partitions {str(partitions)}")
+
+        self.kafka_policyengine_consumer.subscribe([self.ctrl_work_q_name], on_assign=log_partition_assignment)
         while True:
             unparsed_message = self.kafka_policyengine_consumer.poll(timeout=1)
 
