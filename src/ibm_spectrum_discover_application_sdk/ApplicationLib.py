@@ -448,7 +448,7 @@ class ApplicationBase():
         """
         self.logger.debug("Querying information for connections")
         try:
-
+            err=""
             headers = {}
             self.logger.info("Invoking conn manager at %s", self.connmgr_url)
 
@@ -477,17 +477,20 @@ class ApplicationBase():
             # return certificate data
             if response.ok:
                 return json.loads(response.content)
+            else:
+                #not listed exception case otherwise will be overwritten
+                err=f"Request Error :: {response}"
 
         except requests.exceptions.HTTPError as exc:
-            err = "Http Error :: %s " % exc
+            err = f"Http Error :: {exc} "
         except requests.exceptions.ConnectionError as exc:
-            err = "Error Connecting :: %s " % exc
+            err = f"Error Connecting :: {exc} "
         except requests.exceptions.Timeout as exc:
-            err = "Timeout Error :: %s " % exc
+            err = f"Timeout Error :: {exc} "
         except requests.exceptions.RequestException as exc:
-            err = "Request Error :: %s " % exc
+            err = f"Request Error :: {exc} "
         except Exception as exc:
-            err = "Request Error :: %s " % str(exc)
+            err = f"Request Error :: {exc} "
 
         raise Exception(err)
 
