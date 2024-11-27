@@ -1,4 +1,4 @@
-requests==2.25.1
+requests==2.31.0
 confluent_kafka==1.6.0
 boto3==1.17.80
 paramiko==2.10.1
